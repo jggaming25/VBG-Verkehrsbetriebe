@@ -85,11 +85,72 @@ export function feedbackRow(ticketId) {
   ];
 }
 
+export function normalizePanel(panel) {
+  const p = { ...panel };
+  p.name = p.name || p.title || 'Ticket Panel';
+  p.ticketNameFormat = p.ticketNameFormat || 'PREFIX-USERNAME';
+  p.customTicketNameFormat = p.customTicketNameFormat || '%PREFIX%-%USERNAME%';
+  p.mentionTeam = p.mentionTeam ?? false;
+  p.topics = p.maxTicketsPerUser ?? 0;
+  p.closeRestricted = p.closeRestricted ?? false;
+  p.onLeaveAction = p.onLeaveAction || 'none';
+  p.allowAddUsers = p.allowAddUsers ?? false;
+  p.rating = { enabled: false, channelId: null, publicChannelId: null, ...(p.rating || {}) };
+  p.automation = {
+    autoCloseDays: 0, autoAlertMinutes: 0, autoTeamAlertMinutes: 0, autoUnclaimMinutes: 0,
+    closeIfNoResponse: false, autoClaim: false, closeAfterCloseRequest: false,
+    ...(p.automation || {}),
+  };
+  p.logs = { enabled: false, channelId: null, transcripts: true, ...(p.logs || {}) };
+  p.claimCategory = { enabled: false, categoryId: null, ...(p.claimCategory || {}) };
+  p.panelEmbed = { title: p.name, description: p.description || '', image: p.image || null, ...(p.panelEmbed || {}) };
+  p.openingEmbed = { title: null, description: null, image: null, ...(p.openingEmbed || {}) };
+  p.categories = (p.categories || []).map((c) => ({
+    id: c.id || (c.channelId ? `cat_${c.channelId}` : `cat_${Math.random().toString(36).slice(2, 9)}`),
+    name: c.name || c.label || 'Support',
+    prefix: c.prefix || String(c.name || c.label || 'ticket').toLowerCase().replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-').slice(0, 20) || 'ticket',
+    emoji: c.emoji || '🎫',
+    description: c.description || '',
+    categoryId: c.categoryId || c.channelId || null,
+    active: c.active ?? true,
+    capacity: c.capacity ?? 0,
+    roles: c.roles || [],
+    allowOnBehalf: c.allowOnBehalf ?? false,
+    embedOverride: c.embedOverride ?? false,
+    openingEmbed: { ...(c.openingEmbed || {}) },
+  }));
+  return p;
+}
+
+export function formatTicketName(panel, cat, creator, seq) {
+  const fmt = panel.ticketNameFormat === 'custom'
+    ? (panel.customTicketNameFormat || '%PREFIX%-%USERNAME%')
+    : {
+        'PREFIX-USERNAME': '%PREFIX%-%USERNAME%',
+        'PREFIX-USER_ID': '%PREFIX%-%USER_ID%',
+        'PREFIX-USER_NICK_NAME': '%PREFIX%-%USER_NICK_NAME%',
+      }[panel.ticketNameFormat] || '%PREFIX%-%USERNAME%';
+  const tag = creator.user ? creator.user.tag : creator.id;
+  const username = creator.user ? creator.user.username : creator.displayName;
+  const name = fmt
+    .replaceAll('%CASEID%', String(seq || ''))
+    .replaceAll('%PREFIX%', (cat && cat.prefix) || 'ticket')
+    .replaceAll('%USERNAME%', username)
+    .replaceAll('%USER_ID%', creator.id)
+    .replaceAll('%USER_NICK_NAME%', (creator.displayName || username).toString())
+    .replaceAll('%DISPLAY_NAME%', (creator.displayName || username).toString())
+    .replaceAll('%TAG%', tag);
+  return String(name).toLowerCase().replace(/[^a-z0-9-_ ]/g, '-').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || `ticket-${seq}`;
+}
+
 export function buildPanelEmbed(panel, guildName) {
+  const p = normalizePanel(panel);
+  const pe = p.panelEmbed || {};
   const e = new EmbedBuilder()
     .setColor(parseHexColor(panel.color || '#5865F2'))
-    .setTitle(panel.title)
-    .setDescription(panel.description || '');
+    .setTitle(pe.title || p.name)
+    .setDescription(pe.description || '');
+  if (pe.image) e.setImage(pe.image);
   if (panel.thumbnail) e.setThumbnail(panel.thumbnail);
   if (panel.footer) e.setFooter({ text: panel.footer });
   if (guildName && !panel.footer) e.setFooter({ text: guildName });
@@ -97,14 +158,15 @@ export function buildPanelEmbed(panel, guildName) {
 }
 
 export function panelRow(panel) {
-  if (panel.categories.length === 1) {
+  const p = normalizePanel(panel);
+  if (p.categories.length === 1) {
     return [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`popen:${panel.id}`)
-          .setLabel(panel.categories[0].label)
+          .setLabel(p.categories[0].name)
           .setStyle(ButtonStyle.Primary)
-          .setEmoji(panel.categories[0].emoji || '🎫')
+          .setEmoji(p.categories[0].emoji || '🎫')
       ),
     ];
   }
@@ -116,10 +178,10 @@ export function panelRow(panel) {
         .setMinValues(1)
         .setMaxValues(1)
         .addOptions(
-          panel.categories.map((c) =>
+          p.categories.map((c) =>
             new StringSelectMenuOptionBuilder()
-              .setLabel(String(c.label).slice(0, 90))
-              .setValue(c.channelId)
+              .setLabel(String(c.name).slice(0, 90))
+              .setValue(c.id)
               .setEmoji(c.emoji || '🎫')
           )
         )
@@ -129,22 +191,28 @@ export function panelRow(panel) {
 
 // ---------------------------------------------------------------- create
 
-export async function createTicket({ guild, creator, panel, topic, categoryChannel }) {
+export async function createTicket({ guild, creator, panel, topic, categoryChannel, cat }) {
   const cfg = store.ensureConfig(guild.id);
+  const pn = panel ? normalizePanel(panel) : null;
+  const targetCat = cat || (pn ? pn.categories.find((c) => c.id === categoryChannel) : null) || null;
   const open = store.getTickets(guild.id).filter((x) => x.status === 'open' && x.creatorId === creator.id).length;
-  if (cfg.maxTicketsPerUser > 0 && open >= cfg.maxTicketsPerUser) {
+  const limit = (pn && pn.topics !== undefined && pn.topics > 0) ? pn.topics : cfg.maxTicketsPerUser;
+  if (limit > 0 && open >= limit) {
     return { ok: false, error: t(cfg, 'ticket_created_limited') };
   }
 
   const seq = store.nextSeq(guild.id);
   const id = `T-${String(seq).padStart(4, '0')}`;
-  const cat = categoryChannel || (cfg.defaultCategoryId ? guild.channels.cache.get(cfg.defaultCategoryId) : null);
+  const cast = targetCat && targetCat.categoryId ? guild.channels.cache.get(targetCat.categoryId) : null;
+  const parentCat = cast || (cfg.defaultCategoryId ? guild.channels.cache.get(cfg.defaultCategoryId) : null);
 
   const overwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
     { id: creator.id, allow: TEXT },
   ];
-  for (const rid of staffRoles(cfg)) {
+  const catRoles = targetCat && targetCat.roles && targetCat.roles.length ? targetCat.roles : null;
+  const roleSet = new Set([...staffRoles(cfg), ...(catRoles || [])]);
+  for (const rid of roleSet) {
     if (rid) overwrites.push({ id: rid, allow: STAFF });
   }
   if (cfg.openRoleId) overwrites.push({ id: cfg.openRoleId, allow: VIEW });
@@ -152,10 +220,11 @@ export async function createTicket({ guild, creator, panel, topic, categoryChann
     if (rid) overwrites.push({ id: rid, allow: VIEW });
   }
 
+  const chName = pn ? formatTicketName(pn, targetCat, creator, seq) : `ticket-${seq}`;
   const channel = await guild.channels.create({
-    name: `ticket-${seq}`,
+    name: chName,
     type: ChannelType.GuildText,
-    parent: cat ? cat.id : undefined,
+    parent: parentCat ? parentCat.id : undefined,
     reason: `Ticket ${id}`,
     permissionOverwrites: overwrites,
   });
@@ -171,8 +240,8 @@ export async function createTicket({ guild, creator, panel, topic, categoryChann
     creatorTag: creator.user.tag,
     creatorAvatar: creator.user.displayAvatarURL({ size: 128 }),
     panelId: panel ? panel.id : null,
-    topic: topic || (panel && panel.name) || null,
-    categoryName: cat ? cat.name : null,
+    topic: topic || (targetCat && targetCat.name) || (pn && pn.name) || null,
+    categoryName: parentCat ? parentCat.name : null,
     status: 'open',
     claimedBy: null,
     claimAt: null,
@@ -196,22 +265,27 @@ export async function createTicket({ guild, creator, panel, topic, categoryChann
   };
   store.addTicket(ticket);
 
+  const oe = (targetCat && targetCat.embedOverride && targetCat.openingEmbed)
+    ? targetCat.openingEmbed
+    : (pn && pn.openingEmbed) || {};
   const embed = new EmbedBuilder()
     .setColor(embedColor(cfg))
-    .setTitle(embedOf(cfg, 'title', t(cfg, 'ticket_welcome_title')))
-    .setDescription(embedOf(cfg, 'description', t(cfg, 'ticket_welcome_desc')))
+    .setTitle(oe.title || embedOf(cfg, 'title', t(cfg, 'ticket_welcome_title')))
+    .setDescription(oe.description || embedOf(cfg, 'description', t(cfg, 'ticket_welcome_desc')))
     .addFields(
       { name: t(cfg, 'ticket_welcome_topic'), value: ticket.topic || '–', inline: true },
       { name: t(cfg, 'ticket_welcome_owner'), value: `<@${creator.id}>`, inline: true },
       { name: 'ID', value: id, inline: true }
     )
     .setTimestamp();
+  if (oe.image) embed.setImage(oe.image);
   if (embedOf(cfg, 'author')) embed.setAuthor({ name: embedOf(cfg, 'author') });
   if (embedOf(cfg, 'thumbnail')) embed.setThumbnail(embedOf(cfg, 'thumbnail'));
   if (embedOf(cfg, 'footer')) embed.setFooter({ text: embedOf(cfg, 'footer') });
 
-  const ping = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : null;
-  await channel.send({ content: ping || undefined, embeds: [embed], components: rowTicketActions(ticket.id) });
+  const mention = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : null;
+  const teamMention = (pn && pn.mentionTeam && (cfg.pingRoleId || catRoles && catRoles[0])) ? `<@&${cfg.pingRoleId || catRoles[0]}>` : null;
+  await channel.send({ content: mention || teamMention || undefined, embeds: [embed], components: rowTicketActions(ticket.id) });
 
   logAction(guild, 'created', { ticket, actor: creator, detail: ticket.topic || '' });
   await sendLog(guild, 'created', cfg, { ticket, actor: creator });

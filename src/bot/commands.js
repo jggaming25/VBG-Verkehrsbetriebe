@@ -75,7 +75,7 @@ const base = [
         await defer(i);
         const panels = store.getPanels(guild.id);
         if (!panels.length) return reply(i, { content: 'Keine Panels vorhanden.' });
-        const lines = panels.map((p) => `**${p.title}** – <#${p.channelId}> – ${p.categories.length} Kategorie(n)`);
+        const lines = panels.map((p) => `**${p.name || p.title}** – <#${p.channelId}> – ${p.categories.length} Kategorie(n)`);
         return reply(i, { content: `📋 **Panels (${panels.length})**\n${lines.join('\n')}` });
       }
 
@@ -85,22 +85,34 @@ const base = [
         const target = i.options.getChannel('channel');
         if (!target || !target.isTextBased()) return reply(i, { content: t(cfg, 'panel_invalid_channel') });
         const cats = PANEL_CAT_OPTS.map((n) => i.options.getChannel(n)).filter(Boolean);
-        const categories = cats.map((c, idx) => ({ label: c.name, channelId: c.id, emoji: EMOJIS[idx] || '🎫' }));
+        const categories = cats.map((c, idx) => ({
+          id: `cat_${c.id}`,
+          label: c.name,
+          name: c.name,
+          prefix: c.name.toLowerCase().replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-').slice(0, 20) || 'ticket',
+          emoji: EMOJIS[idx] || '🎫',
+          description: '',
+          channelId: c.id,
+          categoryId: c.id,
+          active: true,
+        }));
         const panel = {
           id: Math.random().toString(36).slice(2, 9) + Date.now().toString(36),
           guildId: guild.id,
           channelId: target.id,
+          name: i.options.getString('title') || t(cfg, 'panel_title_default'),
           title: i.options.getString('title') || t(cfg, 'panel_title_default'),
           description: i.options.getString('description') || t(cfg, 'panel_desc_default'),
           color: i.options.getString('color') || cfg.embed.color || '#5865F2',
           footer: null,
           thumbnail: null,
+          ticketNameFormat: 'PREFIX-USERNAME',
           categories,
           createdAt: Date.now(),
         };
         store.addPanel(guild.id, panel);
         await target.send({ embeds: [buildPanelEmbed(panel, guild.name)], components: panelRow(panel) });
-        return reply(i, { content: `✅ Panel **${panel.title}** in <#${target.id}> erstellt (${categories.length} Kategorie(n)).` });
+        return reply(i, { content: `✅ Panel **${panel.name}** in <#${target.id}> erstellt (${categories.length} Kategorie(n)).` });
       }
 
       if (sub === 'delete') {

@@ -38,9 +38,8 @@ export async function handleInteraction(client, i) {
       const panel = store.getPanel(guild.id, panelId);
       if (!panel) return ack(i, { content: 'Dieses Panel existiert nicht mehr.', ephemeral: true }, true);
       const cat = panel.categories[0];
-      const categoryChannel = cat && cat.channelId ? guild.channels.cache.get(cat.channelId) : null;
       await i.deferReply({ ephemeral: true });
-      const res = await createTicket({ guild, creator: member, panel, topic: cat ? cat.label : null, categoryChannel });
+      const res = await createTicket({ guild, creator: member, panel, cat });
       if (!res.ok) return i.editReply({ content: res.error });
       return i.editReply({ content: `🎫 Ticket erstellt: <#${res.channel.id}>` });
     }
@@ -208,11 +207,10 @@ export async function handleInteraction(client, i) {
     const panelId = i.customId.split(':')[1];
     const panel = store.getPanel(guild.id, panelId);
     if (!panel) return ack(i, { content: 'Dieses Panel existiert nicht mehr.', ephemeral: true }, true);
-    const channelId = i.values[0];
-    const categoryChannel = guild.channels.cache.get(channelId);
-    const cat = panel.categories.find((c) => c.channelId === channelId);
+    const catId = i.values[0];
+    const cat = (panel.categories || []).find((c) => c.id === catId || c.channelId === catId);
     await i.deferReply({ ephemeral: true });
-    const res = await createTicket({ guild, creator: member, panel, topic: cat ? cat.label : null, categoryChannel });
+    const res = await createTicket({ guild, creator: member, panel, cat });
     if (!res.ok) return i.editReply({ content: res.error });
     return i.editReply({ content: `🎫 Ticket erstellt: <#${res.channel.id}>` });
   }

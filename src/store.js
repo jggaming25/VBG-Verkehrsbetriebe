@@ -173,6 +173,14 @@ export class Store {
   getPanel(guildId, panelId) {
     return this.getPanels(guildId).find((p) => p.id === panelId);
   }
+  updatePanel(guildId, panelId, patch) {
+    const panel = this.getPanel(guildId, panelId);
+    if (panel) {
+      Object.assign(panel, patch);
+      this.save();
+    }
+    return panel;
+  }
 
   // ---------- tickets ----------
   nextSeq(guildId) {

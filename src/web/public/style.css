@@ -177,6 +177,25 @@ code { background: var(--panel2); border: 1px solid var(--border); padding: 1px 
 .modal h3 { font-size: 18px; }
 
 .hero { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+
+/* ---------------- panel editor ---------------- */
+.fmtOpt { display: block; border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; cursor: pointer; background: var(--panel2); transition: all .12s; }
+.fmtOpt:has(input:checked) { border-color: var(--brand); background: rgba(88,101,242,.12); box-shadow: 0 0 0 1px var(--brand) inset; }
+.fmtOpt input { margin-right: 8px; }
+.fmtOpt p { margin: 4px 0 0; }
+
+.rgbpicker { display: flex; flex-direction: column; gap: 10px; }
+.rgbpicker input[type="color"] { width: 100%; height: 44px; border: none; border-radius: 10px; background: transparent; padding: 0; cursor: pointer; }
+.rgbpicker .rgbrow { display: flex; align-items: center; gap: 10px; }
+.rgbpicker .rgbrow span { width: 14px; font-weight: 700; color: var(--muted); font-size: 12px; }
+.rgbpicker .rgbrow b { width: 30px; text-align: right; font-size: 12px; color: var(--muted); }
+.rgbpicker .rgbrow input[type="range"] { flex: 1; accent-color: var(--brand); }
+.rgbpicker input[type="text"] { width: 100%; }
+
+select[multiple] { min-height: 90px; }
+
+.embed-preview { position: relative; }
+.embed-preview small { display: block; }
 .hero .icon { width: 52px; height: 52px; border-radius: 15px; display: grid; place-items: center; font-size: 26px; background: linear-gradient(135deg, rgba(88,101,242,.35), rgba(139,124,255,.25)); border: 1px solid rgba(139,124,255,.3); }
 .hero .t h1 { margin: 0; }
 .hero .t .sub { margin: 2px 0 0; }

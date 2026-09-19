@@ -443,62 +443,594 @@ function promptModal(title, msg) {
     </div>`).then((ok) => ok ? ($('#promptVal').value || '').trim() : null);
 }
 
-// ---------------------------------------------------------------- panels
+// ---------------------------------------------------------------- panels (GalaxyBot-Stil)
+
+state.editor = { panel: null, meta: null, tab: 'general' };
+
+const RATING_SHOW = ['creator', 'category', 'closeReason', 'handler', 'duration', 'rating'];
+const FORMAT_OPTS = [
+  { id: 'PREFIX-USERNAME', label: '%PREFIX%-%USERNAME%', desc: 'z.B. bug-pluto' },
+  { id: 'PREFIX-USER_ID', label: '%PREFIX%-%USER_ID%', desc: 'z.B. bug-821835831844012103' },
+  { id: 'PREFIX-USER_NICK_NAME', label: '%PREFIX%-%USER_NICK_NAME%', desc: 'z.B. bug-pluto-plüschi' },
+  { id: 'custom', label: 'Eigene', desc: 'eigenes Format mit Platzhaltern' },
+];
 
 function renderPanels() {
+  if (state.editor.panel) return renderPanelEditor();
   const g = current();
+  if (!state.editor.meta) {
+    (async () => {
+      try {
+        const meta = await api(`/api/g/${g.guild.id}/panel-meta`);
+        state.editor.meta = meta.meta;
+        renderPanels();
+      } catch { /* weiter mit Liste ohne Namen */ }
+    })();
+  }
   main().innerHTML = `
     <div class="row between wrap">
       <div class="hero"><div class="icon">🧩</div><div class="t">
-        <h1>Panels</h1><p class="sub">Ticket-Eröffnungs-Panels mit bis zu 5 Kategorien.</p>
+        <h1>Panels</h1><p class="sub">Ticket-Panels mit Kategorien, Embeds, Automatisierung und mehr.</p>
       </div></div>
-      <button class="btn sm ghost" id="newPanelBtn">+ Neues Panel</button>
-    </div>
-    <div id="panelForm" class="card mt" style="display:none">
-      <div class="grid g2">
-        <div><label>Kanal-ID (Panel erscheint dort)</label><input id="pChannel" placeholder="123456789012345678"></div>
-        <div><label>Titel</label><input id="pTitle" placeholder="🎫 Ticket erstellen"></div>
-      </div>
-      <label>Beschreibung</label><textarea id="pDesc" placeholder="Klicke unten, um ein Ticket zu erstellen."></textarea>
-      <label>Farbe</label><input id="pColor" placeholder="#5865F2">
-      <label>Kategorien (eine pro Zeile: Label = Kanal-ID)</label>
-      <textarea id="pCats" placeholder="Support = 12345678&#10;Billing = 98765432"></textarea>
-      <div class="row mt"><button class="btn green sm" id="pSave">Erstellen</button></div>
+      <button class="btn sm" id="newPanelBtn">＋ Neues Panel erstellen</button>
     </div>
     <div class="grid g2 mt" id="panelList"></div>`;
 
-  $('#newPanelBtn').addEventListener('click', () => {
-    $('#panelForm').style.display = $('#panelForm').style.display === 'none' ? 'block' : 'none';
-  });
-  $('#pSave').addEventListener('click', async () => {
-    const cats = $('#pCats').value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
-      const m = l.split(/\s*[=:]\s*/);
-      return { label: (m[0] || m[1] || '').trim(), channelId: ((m[1] || m[0]) || '').trim() };
-    }).filter((c) => c.channelId);
+  $('#newPanelBtn').addEventListener('click', async () => {
     try {
-      await api(`/api/g/${g.guild.id}/panels/create`, jsonBody({ channelId: $('#pChannel').value.trim(), title: $('#pTitle').value, description: $('#pDesc').value, color: $('#pColor').value, categories: cats }));
-      toast('✅ Panel erstellt');
-      await refreshState();
-      renderPanels();
+      const meta = await api(`/api/g/${g.guild.id}/panel-meta`);
+      state.editor = { panel: null, meta: meta.meta, tab: 'general' };
+      renderPanelEditor();
     } catch (e) { toast(e.message); }
   });
+
   const panels = g.panels;
   $('#panelList').innerHTML = panels.length
     ? panels.map((p) => `<div class="card">
-        <div class="row between"><b>${esc(p.title)}</b><button class="btn red sm" data-pid="${esc(p.id)}">🗑️</button></div>
-        <p class="muted small mt">Kanal: <code>${esc(p.channelId)}</code></p>
-        <p class="muted small">${p.categories.length} Kategorie(n): ${p.categories.map((c) => `${c.emoji} ${esc(c.label)}`).join(', ')}</p>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="width:14px;height:14px;border-radius:4px;background:#${esc(p.color || '5865F2')};border:1px solid var(--border)"></span>
+          <b>${esc(p.name || p.title)}</b>
+        </div>
+        <p class="muted small mt">Kanal: <code>#${esc(channelName(p.channelId))}</code></p>
+        <p class="muted small">${p.categories.length} Kategorie(n): ${(p.categories || []).map((c) => `${c.emoji || ''} ${esc(c.name || c.label)}`).join(', ')}</p>
+        <div class="row mt between">
+          <button class="btn ghost sm" data-edit="${esc(p.id)}">✏️ Bearbeiten</button>
+          <button class="btn red sm" data-dpid="${esc(p.id)}">🗑️</button>
+        </div>
       </div>`).join('')
-    : '<p class="muted">Keine Panels. Erstelle ein Panel via <code>/panel create</code> oder oben.</p>';
-  document.querySelectorAll('[data-pid]').forEach((b) =>
+    : '<p class="muted">Keine Panels. Erstelle dein erstes Panel mit <b>＋ Neues Panel erstellen</b>.</p>';
+
+  document.querySelectorAll('[data-edit]').forEach((b) =>
     b.addEventListener('click', async () => {
-      if (!await confirmModal('Panel löschen?', 'Das Panel wird entfernt.', 'Löschen', true)) return;
-      await api(`/api/g/${g.guild.id}/panels/delete`, jsonBody({ panelId: b.dataset.pid }));
+      try {
+        const [meta, pd] = await Promise.all([
+          api(`/api/g/${g.guild.id}/panel-meta`),
+          api(`/api/g/${g.guild.id}/panels/${b.dataset.edit}`),
+        ]);
+        state.editor = { panel: pd.panel, meta: meta.meta, tab: 'general' };
+        renderPanelEditor();
+      } catch (e) { toast(e.message); }
+    })
+  );
+  document.querySelectorAll('[data-dpid]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      if (!await confirmModal('Panel löschen?', 'Das Panel wird aus dem Dashboard entfernt. In Discord gesendete Panels bleiben bestehen, sofern nicht manuell gelöscht.', 'Löschen', true)) return;
+      await api(`/api/g/${g.guild.id}/panels/delete`, jsonBody({ panelId: b.dataset.dpid }));
       toast('🗑️ Panel gelöscht');
       await refreshState();
       renderPanels();
     })
   );
+}
+
+function channelName(id) {
+  const list = (state.editor && state.editor.meta ? state.editor.meta.textChannels : []);
+  const hit = list.find((c) => c.id === id);
+  return hit ? hit.name : id || '–';
+}
+
+function catName(id) {
+  const list = (state.editor && state.editor.meta ? state.editor.meta.categories : []);
+  const hit = list.find((c) => c.id === id);
+  return hit ? hit.name : id || '–';
+}
+
+function roleName(id) {
+  const m = state.editor.meta;
+  const hit = m.roles.find((r) => r.id === id);
+  return hit ? hit.name : id || '–';
+}
+
+function optCategories() {
+  return state.editor.meta.categories.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+}
+function optTextChannels(selected) {
+  return [`<option value="">— Keiner —</option>`, ...state.editor.meta.textChannels.map((c) => `<option value="${esc(c.id)}" ${selected === c.id ? 'selected' : ''}>#${esc(c.name)}</option>`)].join('');
+}
+function optRoles(multiSel) {
+  return state.editor.meta.roles.map((r) => `<option value="${esc(r.id)}" ${(multiSel || []).includes(r.id) ? 'selected' : ''}>@${esc(r.name)}</option>`).join('');
+}
+
+function hexToRgb(hex) {
+  const h = String(hex || '').replace('#', '');
+  return { r: parseInt(h.slice(0, 2), 16) || 0, g: parseInt(h.slice(2, 4), 16) || 0, b: parseInt(h.slice(4, 6), 16) || 0 };
+}
+function rgbToHex(r, g, b) {
+  const c = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+  return `${c(r)}${c(g)}${c(b)}`;
+}
+
+const PANEL_TABS = [
+  { id: 'general', label: 'Allgemeines' },
+  { id: 'embeds', label: 'Embeds' },
+  { id: 'categories', label: 'Kategorien' },
+  { id: 'rating', label: 'Bewertung' },
+  { id: 'automation', label: 'Automation' },
+  { id: 'logs', label: 'Logs' },
+  { id: 'claim', label: 'Claim-Kategorie' },
+  { id: 'send', label: 'Panel senden' },
+];
+
+function editorHeader(p) {
+  return `
+    <div class="row between wrap" style="margin-bottom:18px">
+      <div class="hero" style="margin:0"><div class="icon">🧩</div><div class="t">
+        <h1>${state.editor.panel ? 'Panel bearbeiten' : 'Neues Panel erstellen'}</h1>
+        <p class="sub" style="margin:0">${esc(p.name || 'Unbenanntes Panel')}</p>
+      </div></div>
+      <button class="btn ghost sm" id="edClose">← Zurück zu Panels</button>
+    </div>
+    <div class="tabs" style="margin-bottom:16px">
+      ${PANEL_TABS.map((t) => `<button class="tab ${state.editor.tab === t.id ? 'active' : ''}" data-tab="${t.id}">${t.label}</button>`).join('')}
+    </div>`;
+}
+
+function renderPanelEditor() {
+  const ed = state.editor;
+  const p = ed.panel || (ed.panel = {
+    id: null, name: '', channelId: '', color: '5865F2', ticketNameFormat: 'PREFIX-USERNAME', customTicketNameFormat: '%PREFIX%-%USERNAME%',
+    mentionTeam: false, maxTicketsPerUser: 0, closeRestricted: false, onLeaveAction: 'none', allowAddUsers: false,
+    panelEmbed: { title: '', description: '', image: null }, openingEmbed: { title: '', description: '', image: null },
+    categories: [], rating: { enabled: false, channelId: null, publicChannelId: null },
+    automation: { autoCloseDays: 0, autoAlertMinutes: 0, autoTeamAlertMinutes: 0, autoUnclaimMinutes: 0, closeIfNoResponse: false, autoClaim: false, closeAfterCloseRequest: false },
+    logs: { enabled: false, channelId: null, transcripts: true },
+    claimCategory: { enabled: false, categoryId: null },
+  });
+
+  let body = '';
+  if (ed.tab === 'general') body = tabGeneral(p);
+  if (ed.tab === 'embeds') body = tabEmbeds(p);
+  if (ed.tab === 'categories') body = tabCategories(p);
+  if (ed.tab === 'rating') body = tabRating(p);
+  if (ed.tab === 'automation') body = tabAutomation(p);
+  if (ed.tab === 'logs') body = tabLogs(p);
+  if (ed.tab === 'claim') body = tabClaim(p);
+  if (ed.tab === 'send') body = tabSend(p);
+
+  main().innerHTML = editorHeader(p) + body;
+  bindEditorEvents(p);
+}
+
+function panelField(label, id, value, type = 'text', hint = '') {
+  const attrs = type === 'number' ? `min="0"` : '';
+  const t = type === 'textarea' ? `<textarea id="${id}">${esc(value == null ? '' : value)}</textarea>` : `<input id="${id}" type="${type === 'number' ? 'number' : 'text'}" value="${esc(value == null ? '' : value)}" ${attrs}>`;
+  return `<div><label>${label}</label>${t}${hint ? `<p class="muted small">${hint}</p>` : ''}</div>`;
+}
+
+function switchRow(id, checked, label, hint = '') {
+  return `<div class="card"><b class="small">${label}</b>${hint ? `<p class="muted small">${hint}</p>` : ''}
+    <div class="row mt"><label class="switch" style="margin:0"><input type="checkbox" id="${id}" ${checked ? 'checked' : ''}><span class="track"></span><span class="knob"></span></label></div></div>`;
+}
+
+function rgbColorPicker(id, rgb) {
+  return `<div class="rgbpicker">
+    <input type="color" id="${id}_color" value="#${rgbToHex(rgb.r, rgb.g, rgb.b)}">
+    <div class="rgbrow"><span>R</span><input type="range" id="${id}_r" min="0" max="255" value="${rgb.r}"><b id="${id}_rv">${rgb.r}</b></div>
+    <div class="rgbrow"><span>G</span><input type="range" id="${id}_g" min="0" max="255" value="${rgb.g}"><b id="${id}_gv">${rgb.g}</b></div>
+    <div class="rgbrow"><span>B</span><input type="range" id="${id}_b" min="0" max="255" value="${rgb.b}"><b id="${id}_bv">${rgb.b}</b></div>
+    <input id="${id}_hex" type="text" value="#${rgbToHex(rgb.r, rgb.g, rgb.b)}" maxlength="7">
+  </div>`;
+}
+
+function tabGeneral(p) {
+  return `<div class="grid g2 mt">
+    <div class="card">${panelField('Name', 'eName', p.name, 'text', 'Name, den du dem Panel gibst (z.B. „Panel 1")')}</div>
+    <div class="card"><label>Kanal (Panel erscheint dort)</label>
+      <select id="eChannel"><option value="">— Kanal wählen —</option>${state.editor.meta.textChannels.map((c) => `<option value="${esc(c.id)}" ${p.channelId === c.id ? 'selected' : ''}>#${esc(c.name)}</option>`).join('')}</select>
+      <p class="muted small">Dies sollte nicht dein Transkript-Kanal sein.</p>
+    </div>
+  </div>
+  <div class="grid g2 mt">
+    ${switchRow('eMentionTeam', p.mentionTeam, 'Team markieren', 'Teammitglieder werden automatisch bei neuen Tickets dieser Kategorie markiert (Ping wird direkt gelöscht).')}
+    ${switchRow('eCloseRestricted', p.closeRestricted, 'Ticket schließen einschränken', 'Nur Teammitglieder können Tickets schließen – nicht der Ersteller.')}
+    ${switchRow('eAllowAdd', p.allowAddUsers, 'Weitere Personen hinzufügen lassen', 'Erlaubt dem Ticket-Ersteller, weitere Nutzer über /ticket add hinzuzufügen.')}
+    ${switchRow('eAutoClaim', p.automation.autoClaim, 'Auto-Claim', 'Ticket wird automatisch beansprucht, wenn ein Teammitglied schreibt.')}
+  </div>
+  <div class="grid g2 mt">
+    <div class="card">${panelField('Gleichzeitige Tickets-Limit', 'eMaxTickets', p.maxTicketsPerUser, 'number', '0 = unbegrenzt (Server-Einstellung gilt dann).')}</div>
+    <div class="card"><label>Aktion, wenn der Ersteller den Server verlässt</label>
+      <select id="eOnLeave">
+        <option value="none" ${p.onLeaveAction === 'none' ? 'selected' : ''}>Nichts machen</option>
+        <option value="close" ${p.onLeaveAction === 'close' ? 'selected' : ''}>Ticket automatisch schließen</option>
+        <option value="info" ${p.onLeaveAction === 'info' ? 'selected' : ''}>Info-Nachricht senden</option>
+      </select>
+    </div>
+  </div>
+  <div class="card mt"><label>Format der Ticket-Kanalnamen</label>
+    <div class="grid ${FORMAT_OPTS.length === 4 ? '' : ''}" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+      ${FORMAT_OPTS.map((f) => `<label class="fmtOpt" data-fmt="${f.id}">
+        <input type="radio" name="fmt" value="${f.id}" ${p.ticketNameFormat === f.id ? 'checked' : ''}>
+        <b>${esc(f.label)}</b><p class="muted small">${esc(f.desc)}</p>
+      </label>`).join('')}
+    </div>
+    <div id="eCustomWrap" style="display:${p.ticketNameFormat === 'custom' ? 'block' : 'none'}">
+      ${panelField('Eigenes Format', 'eCustomFmt', p.customTicketNameFormat, 'text', 'Platzhalter: %CASEID% %PREFIX% %USERNAME% %USER_ID% %USER_NICK_NAME% %DISPLAY_NAME%')}
+    </div>
+  </div>
+  <div class="row mt"><button class="btn green sm" id="eSaveGeneral">💾 Speichern</button></div>`;
+}
+
+function tabEmbeds(p) {
+  const pe = p.panelEmbed || {};
+  const oe = p.openingEmbed || {};
+  const rgb = hexToRgb(p.color);
+  return `<div class="grid g2 mt">
+    <div class="card"><label>Farbe (Embed)</label>${rgbColorPicker('eColor', rgb)}<p class="muted small">RGB-Auswahl oder Farbe direkt übernehmen.</p></div>
+    <div class="card"><p class="muted small"><b>Embed-Editor</b><br>Diese Embeds werden für alle Kategorien in diesem Panel verwendet (in Kategorien optional überschreibbar).</p></div>
+  </div>
+  <h2>Panel-Embed</h2>
+  <div class="card mt"><div class="grid g2">
+    ${panelField('Titel', 'peTitle', pe.title || p.name)}
+    ${panelField('Bild-URL (optional)', 'peImage', pe.image || '')}
+  </div>
+  ${panelField('Beschreibung', 'peDesc', pe.description || '', 'textarea')}</div>
+  <h2>Eröffnungs-Embed</h2>
+  <div class="card mt"><div class="grid g2">
+    ${panelField('Titel', 'oeTitle', oe.title || '')}
+    ${panelField('Bild-URL (optional)', 'oeImage', oe.image || '')}
+  </div>
+  ${panelField('Beschreibung', 'oeDesc', oe.description || '', 'textarea')}</div>
+  <div class="row mt"><button class="btn green sm" id="eSaveEmbeds">💾 Speichern</button></div>`;
+}
+
+function tabCategories(p) {
+  const cats = p.categories || [];
+  return `<div class="row between mt"><h2 style="margin:0">Kategorien</h2><button class="btn sm" id="eAddCat">＋ Neue Kategorie erstellen</button></div>
+  <div id="catList" class="mt">${cats.length ? cats.map((c, i) => catCard(c, i)).join('') : '<p class="muted">Noch keine Kategorien – erstelle die erste.</p>'}</div>
+  <div class="row mt"><button class="btn green sm" id="eSaveCats">💾 Kategorien speichern</button></div>`;
+}
+
+function catCard(c, i) {
+  const oe = c.openingEmbed || {};
+  return `<div class="card mt" data-catid="${esc(c.id)}">
+    <div class="row between">
+      <div class="row"><label class="switch" style="margin:0"><input type="checkbox" class="cat_active" ${c.active !== false ? 'checked' : ''}><span class="track"></span><span class="knob"></span></label>
+        <b>${esc(c.name || 'Kategorie')}</b> <span class="badge ${c.active !== false ? 'open' : 'closed'}">${c.active !== false ? 'aktiv' : 'inaktiv'}</span></div>
+      <button class="btn red sm cat_del">🗑️</button>
+    </div>
+    <div class="grid g2 mt">
+      <div>${panelField('Name (Pflicht)', 'cat_name_' + i, c.name)}</div>
+      <div>${panelField('Prefix (Pflicht)', 'cat_prefix_' + i, c.prefix, 'text', 'Kurzform für Kanalnamen, z.B. „bug" für „Bug Report"')}</div>
+    </div>
+    <div class="grid g2 mt">
+      <div>${panelField('Emoji', 'cat_emoji_' + i, c.emoji || '')}</div>
+      <div><label>Kategorie</label><select class="cat_category"><option value="">— Keine —</option>${state.editor.meta.categories.map((k) => `<option value="${esc(k.id)}" ${c.categoryId === k.id ? 'selected' : ''}>${esc(k.name)}</option>`).join('')}</select></div>
+    </div>
+    <div class="grid g2 mt">
+      <div>${panelField('Beschreibung', 'cat_desc_' + i, c.description)}</div>
+      <div>${panelField('Auslastung (0 = aus)', 'cat_cap_' + i, c.capacity, 'number', 'Ab 80% wird das Panel gelb, ab 100% rot.')}</div>
+    </div>
+    <div class="card mt"><label>Rollen (Zugriff auf Tickets dieser Kategorie)</label>
+      <select multiple class="cat_roles">${optRoles(c.roles || [])}</select>
+      <div class="row wrap mt">
+        <label class="switch" style="margin:0 30px 0 0"><input type="checkbox" class="cat_onbehalf" ${c.allowOnBehalf ? 'checked' : ''}><span class="track"></span><span class="knob"></span><span style="margin-left:34px;font-weight:600;font-size:12px">Im Auftrag erlauben</span></label>
+        <label class="switch" style="margin:0"><input type="checkbox" class="cat_embedov" ${c.embedOverride ? 'checked' : ''}><span class="track"></span><span class="knob"></span><span style="margin-left:34px;font-weight:600;font-size:12px">Eröffnungs-Embed überschreiben</span></label>
+      </div>
+      <div class="ovEmbed" style="display:${c.embedOverride ? 'block' : 'none'}">
+        <div class="grid g2 mt">
+          <div>${panelField('Titel (Override)', 'cat_ov_title_' + i, oe.title || '')}</div>
+          <div>${panelField('Bild-URL', 'cat_ov_img_' + i, oe.image || '')}</div>
+        </div>
+        <div class="mt">${panelField('Beschreibung', 'cat_ov_desc_' + i, oe.description || '')}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function tabRating(p) {
+  const r = p.rating || {};
+  return `<div class="grid g2 mt">
+    ${switchRow('eRatingOn', r.enabled, 'Bewertungsmodul aktivieren', 'Nutzer erhalten nach dem Schließen per DM die Frage, wie ihnen der Support gefallen hat.')}
+    <div class="card"><p class="muted small"><b>Kanal</b> – interner Rating-Log.<br><b>Öffentlicher Kanal</b> – zusätzlicher öffentlicher Log (optional).</p></div>
+  </div>
+  <div class="grid g2 mt">
+    <div class="card"><label>Kanal (interner Rating-Log)</label><select id="eRatingChan">${optTextChannels(r.channelId)}</select></div>
+    <div class="card"><label>Kanal für öffentlichen Log</label><select id="eRatingPub">${optTextChannels(r.publicChannelId)}</select></div>
+  </div>
+  <div class="row mt"><button class="btn green sm" id="eSaveRating">💾 Speichern</button></div>`;
+}
+
+function tabAutomation(p) {
+  const a = p.automation || {};
+  return `<div class="grid g2 mt">
+    <div class="card">${panelField('Auto-Close nach X Tagen Inaktivität (0 = aus)', 'eAutoCloseDays', a.autoCloseDays, 'number')}</div>
+    <div class="card">${panelField('Auto-Alert nach X Minuten Inaktivität (0 = aus)', 'eAutoAlertMin', a.autoAlertMinutes, 'number', 'Benachrichtigt den Ersteller bei Inaktivität.')}</div>
+    <div class="card">${panelField('Auto-Team-Alert nach X Minuten (0 = aus)', 'eAutoTeamMin', a.autoTeamAlertMinutes, 'number', 'Markiert das zuständige Team-Mitglied bei Inaktivität.')}</div>
+    <div class="card">${panelField('Auto-Unclaim nach X Minuten (0 = aus)', 'eAutoUnclaimMin', a.autoUnclaimMinutes, 'number')}</div>
+  </div>
+  <div class="grid g2 mt">
+    ${switchRow('eCloseNoResp', a.closeIfNoResponse, 'Ticket schließen, wenn der Ersteller nicht reagiert', 'Nach Auto-Alert wird ohne Antwort automatisch geschlossen.')}
+    ${switchRow('eCloseAfterReq', a.closeAfterCloseRequest, 'Direkt schließen nach Close-Request', 'Ticket wird geschlossen, sobald die Close-Request abgeschlossen ist.')}
+  </div>
+  <div class="row mt"><button class="btn green sm" id="eSaveAutomation">💾 Speichern</button></div>`;
+}
+
+function tabLogs(p) {
+  const l = p.logs || {};
+  return `<div class="grid g2 mt">
+    ${switchRow('eLogsOn', l.enabled, 'Ticket-Aktivitäten loggen', 'Alle Ticket-Aktionen werden in den ausgewählten Kanal geloggt.')}
+    ${switchRow('eTranscripts', l.transcripts !== false, 'Ticket-Transkripte aktivieren', 'Nach dem Schließen wird ein Transkript gespeichert (im Team Dashboard ansehbar).')}
+  </div>
+  <div class="card mt"><label>Log-Kanal</label><select id="eLogChan">${optTextChannels(l.channelId)}</select></div>
+  <div class="row mt"><button class="btn green sm" id="eSaveLogs">💾 Speichern</button></div>`;
+}
+
+function tabClaim(p) {
+  const c = p.claimCategory || {};
+  return `<div class="grid g2 mt">
+    ${switchRow('eClaimOn', c.enabled, 'Claim-Kategorie aktivieren', 'Geclaimte Tickets werden automatisch in eine andere Kategorie verschoben.')}
+    <div class="card"><label>Kategorie</label><select id="eClaimCat"><option value="">— Keine —</option>${state.editor.meta.categories.map((k) => `<option value="${esc(k.id)}" ${c.categoryId === k.id ? 'selected' : ''}>${esc(k.name)}</option>`).join('')}</select></div>
+  </div>
+  <div class="row mt"><button class="btn green sm" id="eSaveClaim">💾 Speichern</button></div>`;
+}
+
+function tabSend(p) {
+  const rgb = hexToRgb(p.color);
+  return `<div class="row between mt"><div><h2 style="margin:0">Panel senden</h2><p class="muted small">Sendet das Panel in den ausgewählten Kanal.</p></div></div>
+  <div class="card mt" style="max-width:480px">
+    <div class="embed-preview" style="border-left:4px solid #${esc(p.color || '5865F2')};padding:14px;border-radius:10px;background:var(--panel2)">
+      <b class="small">${esc((p.panelEmbed && p.panelEmbed.title) || p.name || 'Ticket Panel')}</b>
+      <p class="small" style="color:var(--muted);margin-top:6px">${esc((p.panelEmbed && p.panelEmbed.description) || '— keine Beschreibung —')}</p>
+      <div class="muted small mt" style="color:var(--muted)">${(p.categories || []).map((c) => `${c.emoji || '🎫'} ${esc(c.name)}`.trim()).join(' · ') || '— Kategorien —'}</div>
+    </div>
+    <div class="row mt between">
+      <button class="btn ghost sm" id="eSaveAll">💾 Alle Änderungen speichern</button>
+      <button class="btn green sm" id="eSendPanel">📨 Panel senden</button>
+    </div>
+  </div>`;
+}
+
+function valOf(id, fallback = '') {
+  const el = document.getElementById(id);
+  return el ? el.value : fallback;
+}
+function chkOf(id, fallback = false) {
+  const el = document.getElementById(id);
+  return el ? el.checked : fallback;
+}
+
+function collectPanelFromDom(p) {
+  const getPanel = () => state.editor.panel;
+
+  const cats = (getPanel() && getPanel().categories || []);
+  const updated = cats.map((c, i) => {
+    const n = $(`#cat_name_${i}`);
+    if (!n) return c;
+    const categoryId = document.querySelectorAll('.cat_category')[i] ? document.querySelectorAll('.cat_category')[i].value : c.categoryId;
+    const roles = [...(document.querySelectorAll('.cat_roles')[i] ? document.querySelectorAll('.cat_roles')[i].selectedOptions : [])].map((o) => o.value);
+    const active = document.querySelectorAll('.cat_active')[i] ? document.querySelectorAll('.cat_active')[i].checked : c.active !== false;
+    const onbehalf = document.querySelectorAll('.cat_onbehalf')[i] ? document.querySelectorAll('.cat_onbehalf')[i].checked : !!c.allowOnBehalf;
+    const ov = document.querySelectorAll('.cat_embedov')[i] ? document.querySelectorAll('.cat_embedov')[i].checked : !!c.embedOverride;
+    const oe = c.openingEmbed || {};
+    return {
+      ...c,
+      name: n.value, prefix: $(`#cat_prefix_${i}`).value, emoji: $(`#cat_emoji_${i}`).value, description: $(`#cat_desc_${i}`).value,
+      categoryId, roles, active, allowOnBehalf: onbehalf, embedOverride: ov,
+      capacity: Math.max(0, parseInt($(`#cat_cap_${i}`).value, 10) || 0),
+      openingEmbed: { title: valOf(`cat_ov_title_${i}`, oe.title), description: valOf(`cat_ov_desc_${i}`, oe.description), image: valOf(`cat_ov_img_${i}`, oe.image) || null },
+    };
+  });
+
+  const panelEmbed = {
+    title: valOf('peTitle', (p.panelEmbed && p.panelEmbed.title) || p.name),
+    description: valOf('peDesc', (p.panelEmbed && p.panelEmbed.description) || ''),
+    image: valOf('peImage', (p.panelEmbed && p.panelEmbed.image) || '') || null,
+  };
+  const openingEmbed = {
+    title: valOf('oeTitle', (p.openingEmbed && p.openingEmbed.title) || '') || null,
+    description: valOf('oeDesc', (p.openingEmbed && p.openingEmbed.description) || '') || null,
+    image: valOf('oeImage', (p.openingEmbed && p.openingEmbed.image) || '') || null,
+  };
+  const color = document.getElementById('eColor_hex') ? document.getElementById('eColor_hex').value.replace('#', '') : p.color;
+
+  return {
+    id: getPanel().id,
+    name: valOf('eName', p.name),
+    channelId: valOf('eChannel', p.channelId),
+    color,
+    ticketNameFormat: (document.querySelector('input[name="fmt"]:checked') || {}).value || p.ticketNameFormat || 'PREFIX-USERNAME',
+    customTicketNameFormat: valOf('eCustomFmt', p.customTicketNameFormat),
+    mentionTeam: chkOf('eMentionTeam', p.mentionTeam),
+    closeRestricted: chkOf('eCloseRestricted', p.closeRestricted),
+    allowAddUsers: chkOf('eAllowAdd', p.allowAddUsers),
+    maxTicketsPerUser: Math.max(0, parseInt(valOf('eMaxTickets', p.maxTicketsPerUser), 10) || 0),
+    onLeaveAction: valOf('eOnLeave', p.onLeaveAction),
+    panelEmbed, openingEmbed,
+    categories: updated,
+  };
+}
+
+function collectSingleTab(p) {
+  const tab = state.editor.tab;
+  const body = {};
+  if (tab === 'rating') body.rating = { enabled: $('#eRatingOn').checked, channelId: $('#eRatingChan').value || null, publicChannelId: $('#eRatingPub').value || null };
+  if (tab === 'automation') body.automation = {
+    autoCloseDays: Math.max(0, parseInt($('#eAutoCloseDays').value, 10) || 0),
+    autoAlertMinutes: Math.max(0, parseInt($('#eAutoAlertMin').value, 10) || 0),
+    autoTeamAlertMinutes: Math.max(0, parseInt($('#eAutoTeamMin').value, 10) || 0),
+    autoUnclaimMinutes: Math.max(0, parseInt($('#eAutoUnclaimMin').value, 10) || 0),
+    closeIfNoResponse: $('#eCloseNoResp').checked,
+    autoClaim: false,
+    closeAfterCloseRequest: $('#eCloseAfterReq').checked,
+  };
+  if (tab === 'logs') body.logs = { enabled: $('#eLogsOn').checked, channelId: $('#eLogChan').value || null, transcripts: $('#eTranscripts').checked };
+  if (tab === 'claim') body.claimCategory = { enabled: $('#eClaimOn').checked, categoryId: $('#eClaimCat').value || null };
+  if (tab === 'general') {
+    Object.assign(body, collectPanelFromDom(p));
+  }
+  return body;
+}
+
+async function saveEditor(body, msg) {
+  const ed = state.editor;
+  const gv = current().guild.id;
+  try {
+    if (ed.panel && ed.panel.id) {
+      const r = await api(`/api/g/${gv}/panels/${ed.panel.id}/update`, jsonBody({ ...ed.panel, ...body }));
+      state.editor.panel = r.panel;
+    } else {
+      const r = await api(`/api/g/${gv}/panels/create`, jsonBody(body));
+      state.editor.panel = r.panel;
+    }
+    await refreshState();
+    toast(msg || '✅ Gespeichert');
+    renderPanelEditor();
+  } catch (e) { toast(e.message); }
+}
+
+function bindEditorEvents(p) {
+  // Tabs
+  document.querySelectorAll('[data-tab]').forEach((b) =>
+    b.addEventListener('click', () => { collectTabState(); state.editor.tab = b.dataset.tab; renderPanelEditor(); })
+  );
+  const closeBtn = $('#edClose');
+  if (closeBtn) closeBtn.addEventListener('click', () => { state.editor.panel = null; renderNavView('panels'); });
+
+  // Allgemeines
+  const fmtRadios = document.querySelectorAll('input[name="fmt"]');
+  fmtRadios.forEach((r) => r.addEventListener('change', () => {
+    $('#eCustomWrap').style.display = r.value === 'custom' ? 'block' : 'none';
+    if (r.value === 'custom') state.editor.panel.ticketNameFormat = 'custom';
+  }));
+
+  // Embeds: RGB picker sync
+  bindRgbPicker('eColor', (hex) => { state.editor.panel.color = hex; });
+
+  // Kategorien
+  const addCat = $('#eAddCat');
+  if (addCat) addCat.addEventListener('click', () => {
+    state.editor.panel.categories = [...(state.editor.panel.categories || []), {
+      id: 'cat_' + Math.random().toString(36).slice(2, 9), name: 'Neue Kategorie', prefix: 'neu', emoji: '🎫',
+      description: '', categoryId: '', active: true, capacity: 0, roles: [], allowOnBehalf: false, embedOverride: false, openingEmbed: {},
+    }];
+    renderPanelEditor();
+  });
+  const catDel = document.querySelectorAll('.cat_del');
+  catDel.forEach((b) => {
+    const card = b.closest('[data-catid]');
+    b.addEventListener('click', () => {
+      state.editor.panel.categories = state.editor.panel.categories.filter((c) => c.id !== card.dataset.catid);
+      renderPanelEditor();
+    });
+  });
+  const ovToggles = document.querySelectorAll('.cat_embedov');
+  ovToggles.forEach((t) => {
+    t.addEventListener('change', () => {
+      const box = t.closest('.card').querySelector('.ovEmbed');
+      if (box) box.style.display = t.checked ? 'block' : 'none';
+    });
+  });
+
+  // Save buttons
+  const saveGeneral = $('#eSaveGeneral');
+  if (saveGeneral) saveGeneral.addEventListener('click', () => saveEditor(collectSingleTab(p), '✅ Panel gespeichert'));
+  const saveEmbeds = $('#eSaveEmbeds');
+  if (saveEmbeds) saveEmbeds.addEventListener('click', () => saveEditor(collectPanelFromDom(p), '✅ Embeds gespeichert'));
+  const saveCats = $('#eSaveCats');
+  if (saveCats) saveCats.addEventListener('click', () => saveEditor(collectPanelFromDom(p), '✅ Kategorien gespeichert'));
+  const saveRating = $('#eSaveRating');
+  if (saveRating) saveRating.addEventListener('click', () => saveEditor(collectSingleTab(p), '✅ Bewertung gespeichert'));
+  const saveAutomation = $('#eSaveAutomation');
+  if (saveAutomation) saveAutomation.addEventListener('click', () => saveEditor(collectSingleTab(p), '✅ Automation gespeichert'));
+  const saveLogs = $('#eSaveLogs');
+  if (saveLogs) saveLogs.addEventListener('click', () => saveEditor(collectSingleTab(p), '✅ Logs gespeichert'));
+  const saveClaim = $('#eSaveClaim');
+  if (saveClaim) saveClaim.addEventListener('click', () => saveEditor(collectSingleTab(p), '✅ Claim-Kategorie gespeichert'));
+  const saveAll = $('#eSaveAll');
+  if (saveAll) saveAll.addEventListener('click', () => saveEditor(collectPanelFromDom(p), '✅ Alle Änderungen gespeichert'));
+  const sendPanel = $('#eSendPanel');
+  if (sendPanel) sendPanel.addEventListener('click', async () => {
+    const ok = await confirmModal('Panel senden?', 'Das Panel wird in den ausgewählten Kanal gesendet.', 'Panel senden');
+    if (!ok) return;
+    const ed = state.editor;
+    try {
+      if (!(ed.panel && ed.panel.id)) {
+        const r = await api(`/api/g/${gid()}/panels/create`, jsonBody(collectPanelFromDom(p)));
+        ed.panel = r.panel;
+      } else {
+        const r = await api(`/api/g/${gid()}/panels/${ed.panel.id}/update`, jsonBody(collectPanelFromDom(p)));
+        ed.panel = r.panel;
+      }
+      const r = await api(`/api/g/${gid()}/panels/${ed.panel.id}/send`, { method: 'POST' });
+      toast('📨 Panel gesendet!');
+      await refreshState();
+      state.editor.panel = null;
+      renderNavView('panels');
+    } catch (e) { toast(e.message); }
+  });
+}
+
+function collectTabState() {
+  const t = state.editor.tab;
+  const p = state.editor.panel;
+  if (!p) return;
+  try {
+    if (t === 'general') Object.assign(p, collectPanelFromDom(p));
+    if (t === 'embeds') Object.assign(p, collectPanelFromDom(p));
+    if (t === 'categories') { const c = collectPanelFromDom(p); p.categories = c.categories; }
+    if (t === 'rating') Object.assign(p, collectSingleTab(p));
+    if (t === 'automation') Object.assign(p, collectSingleTab(p));
+    if (t === 'logs') Object.assign(p, collectSingleTab(p));
+    if (t === 'claim') Object.assign(p, collectSingleTab(p));
+  } catch { /* Dom nicht vollständig */ }
+}
+
+function bindRgbPicker(id, onChange) {
+  const hexIn = document.getElementById(`${id}_hex`);
+  const colorIn = document.getElementById(`${id}_color`);
+  const setHex = (hex) => { if (hexIn) hexIn.value = '#' + hex; if (colorIn) colorIn.value = '#' + hex; if (onChange) onChange(hex); };
+  ['r', 'g', 'b'].forEach((ch) => {
+    const sl = document.getElementById(`${id}_${ch}`);
+    const val = document.getElementById(`${id}_${ch}v`);
+    if (!sl) return;
+    sl.addEventListener('input', () => {
+      if (val) val.textContent = sl.value;
+      const r = parseInt(document.getElementById(`${id}_r`).value, 10);
+      const g = parseInt(document.getElementById(`${id}_g`).value, 10);
+      const b = parseInt(document.getElementById(`${id}_b`).value, 10);
+      setHex(rgbToHex(r, g, b));
+    });
+  });
+  if (hexIn) hexIn.addEventListener('input', () => {
+    let h = hexIn.value.replace('#', '');
+    if (/^[0-9a-fA-F]{6}$/.test(h)) {
+      const rgb = hexToRgb(h);
+      const r = document.getElementById(`${id}_r`); const g = document.getElementById(`${id}_g`); const b = document.getElementById(`${id}_b`);
+      if (r) r.value = rgb.r; if (g) g.value = rgb.g; if (b) b.value = rgb.b;
+      const rv = document.getElementById(`${id}_rv`); const gv = document.getElementById(`${id}_gv`); const bv = document.getElementById(`${id}_bv`);
+      if (rv) rv.textContent = rgb.r; if (gv) gv.textContent = rgb.g; if (bv) bv.textContent = rgb.b;
+      setHex(h.toLowerCase());
+    }
+  });
+  if (colorIn) colorIn.addEventListener('input', () => {
+    const h = colorIn.value.replace('#', '');
+    const rgb = hexToRgb(h);
+    const r = document.getElementById(`${id}_r`); const g = document.getElementById(`${id}_g`); const b = document.getElementById(`${id}_b`);
+    if (r) r.value = rgb.r; if (g) g.value = rgb.g; if (b) b.value = rgb.b;
+    const rv = document.getElementById(`${id}_rv`); const gv = document.getElementById(`${id}_gv`); const bv = document.getElementById(`${id}_bv`);
+    if (rv) rv.textContent = rgb.r; if (gv) gv.textContent = rgb.g; if (bv) bv.textContent = rgb.b;
+    setHex(h);
+  });
 }
 
 // ---------------------------------------------------------------- logs / settings

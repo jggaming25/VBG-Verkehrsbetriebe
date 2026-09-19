@@ -17,6 +17,7 @@ import {
   createTicket,
   buildPanelEmbed,
   panelRow,
+  normalizePanel,
 } from '../bot/core.js';
 import { readTranscript } from '../transcript.js';
 
@@ -141,7 +142,8 @@ app.get('/api/state', requireAuth, async (req, res) => {
       },
       panels: store.getPanels(g.id).map((p) => ({
         id: p.id,
-        title: p.title,
+        name: p.name || p.title,
+        color: p.color,
         channelId: p.channelId,
         categories: p.categories,
       })),
@@ -400,27 +402,135 @@ async function startBotSafe() {
   }
 }
 
+function panelMeta(guild) {
+  const cats = guild.channels.cache.filter((c) => c.type === 4).map((c) => ({ id: c.id, name: c.name }));
+  const text = guild.channels.cache.filter((c) => c.isTextBased && c.isTextBased()).map((c) => ({ id: c.id, name: c.name }));
+  const roles = guild.roles.cache.filter((r) => r.id !== guild.id).map((r) => ({ id: r.id, name: r.name }));
+  return { categories: cats, textChannels: text, roles };
+}
+
+app.get('/api/g/:gid/panel-meta', requireAuth, requireGuild, (req, res) => {
+  const guild = client ? client.guilds.cache.get(req.params.gid) : null;
+  if (!guild) return res.status(400).json({ error: 'Bot offline.' });
+  res.json({ meta: panelMeta(guild) });
+});
+
+function sanitizePanelBody(body, guild) {
+  const b = body || {};
+  const categories = (b.categories || []).map((c) => ({
+    id: c.id || `cat_${uid()}`,
+    name: String(c.name || 'Support').slice(0, 60),
+    prefix: String(c.prefix || 'ticket').toLowerCase().replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-').slice(0, 20) || 'ticket',
+    emoji: c.emoji || '🎫',
+    description: c.description || '',
+    categoryId: c.categoryId || null,
+    active: c.active !== false,
+    capacity: Math.max(0, Number(c.capacity) || 0),
+    roles: Array.isArray(c.roles) ? c.roles.filter(Boolean) : [],
+    allowOnBehalf: !!c.allowOnBehalf,
+    embedOverride: !!c.embedOverride,
+    openingEmbed: {
+      title: (c.openingEmbed && c.openingEmbed.title) || null,
+      description: (c.openingEmbed && c.openingEmbed.description) || null,
+      image: (c.openingEmbed && c.openingEmbed.image) || null,
+    },
+  }));
+  let channelId = String(b.channelId || '').trim();
+  if (channelId && !guild.channels.cache.has(channelId)) channelId = '';
+  return {
+    id: b.id || null,
+    channelId,
+    name: String(b.name || 'Ticket Panel').slice(0, 60),
+    description: b.description || '',
+    color: /^#?[0-9a-fA-F]{6}$/.test(String(b.color || '')) ? String(b.color).replace('#', '') : '5865F2',
+    footer: b.footer || null,
+    thumbnail: b.thumbnail || null,
+    ticketNameFormat: ['PREFIX-USERNAME', 'PREFIX-USER_ID', 'PREFIX-USER_NICK_NAME', 'custom'].includes(b.ticketNameFormat) ? b.ticketNameFormat : 'PREFIX-USERNAME',
+    customTicketNameFormat: b.customTicketNameFormat || '%PREFIX%-%USERNAME%',
+    mentionTeam: !!b.mentionTeam,
+    maxTicketsPerUser: Math.max(0, Number(b.maxTicketsPerUser) || 0),
+    closeRestricted: !!b.closeRestricted,
+    onLeaveAction: ['none', 'close', 'info'].includes(b.onLeaveAction) ? b.onLeaveAction : 'none',
+    allowAddUsers: !!b.allowAddUsers,
+    panelEmbed: {
+      title: (b.panelEmbed && b.panelEmbed.title) || b.name || 'Ticket Panel',
+      description: (b.panelEmbed && b.panelEmbed.description) || b.description || '',
+      image: (b.panelEmbed && b.panelEmbed.image) || null,
+    },
+    openingEmbed: {
+      title: (b.openingEmbed && b.openingEmbed.title) || null,
+      description: (b.openingEmbed && b.openingEmbed.description) || null,
+      image: (b.openingEmbed && b.openingEmbed.image) || null,
+    },
+    rating: {
+      enabled: !!(b.rating && b.rating.enabled),
+      channelId: (b.rating && b.rating.channelId) || null,
+      publicChannelId: (b.rating && b.rating.publicChannelId) || null,
+    },
+    automation: {
+      autoCloseDays: Math.max(0, Number((b.automation && b.automation.autoCloseDays)) || 0),
+      autoAlertMinutes: Math.max(0, Number((b.automation && b.automation.autoAlertMinutes)) || 0),
+      autoTeamAlertMinutes: Math.max(0, Number((b.automation && b.automation.autoTeamAlertMinutes)) || 0),
+      autoUnclaimMinutes: Math.max(0, Number((b.automation && b.automation.autoUnclaimMinutes)) || 0),
+      closeIfNoResponse: !!(b.automation && b.automation.closeIfNoResponse),
+      autoClaim: !!(b.automation && b.automation.autoClaim),
+      closeAfterCloseRequest: !!(b.automation && b.automation.closeAfterCloseRequest),
+    },
+    logs: {
+      enabled: !!(b.logs && b.logs.enabled),
+      channelId: (b.logs && b.logs.channelId) || null,
+      transcripts: (b.logs && b.logs.transcripts !== undefined) ? !!b.logs.transcripts : true,
+    },
+    claimCategory: {
+      enabled: !!(b.claimCategory && b.claimCategory.enabled),
+      categoryId: (b.claimCategory && b.claimCategory.categoryId) || null,
+    },
+  };
+}
+
 app.post('/api/g/:gid/panels/create', requireAuth, requireGuild, async (req, res) => {
   const guild = client.guilds.cache.get(req.params.gid);
-  const { channelId, title, description, color, categories } = req.body || {};
-  const target = guild.channels.cache.get(channelId);
-  if (!target) return res.status(400).json({ error: 'Kanal nicht gefunden.' });
-  const cats = (categories || []).map((c) => ({ label: c.label, channelId: c.channelId, emoji: c.emoji || '🎫' }));
+  if (!guild) return res.status(400).json({ error: 'Bot offline.' });
+  const body = sanitizePanelBody(req.body, guild);
+  delete body.id;
   const panel = {
     id: uid(),
     guildId: guild.id,
-    channelId: target.id,
-    title: title || '🎫 Ticket erstellen',
-    description: description || 'Klicke unten, um ein Ticket zu erstellen.',
-    color: color || '#5865F2',
-    footer: null,
-    thumbnail: null,
-    categories: cats,
+    ...body,
     createdAt: Date.now(),
   };
+  panel.channelId = body.channelId;
   store.addPanel(guild.id, panel);
-  await target.send({ embeds: [buildPanelEmbed(panel, guild.name)], components: panelRow(panel) });
-  res.json({ ok: true, panel });
+  res.json({ ok: true, panel: normalizePanel(panel) });
+});
+
+app.get('/api/g/:gid/panels/:pid', requireAuth, requireGuild, (req, res) => {
+  const panel = store.getPanel(req.params.gid, req.params.pid);
+  if (!panel) return res.status(404).json({ error: 'not_found' });
+  res.json({ panel: normalizePanel(panel) });
+});
+
+app.post('/api/g/:gid/panels/:pid/update', requireAuth, requireGuild, async (req, res) => {
+  const guild = client.guilds.cache.get(req.params.gid);
+  if (!guild) return res.status(400).json({ error: 'Bot offline.' });
+  const existing = store.getPanel(req.params.gid, req.params.pid);
+  if (!existing) return res.status(404).json({ error: 'not_found' });
+  const patch = sanitizePanelBody(req.body, guild);
+  const panel = store.updatePanel(guild.id, req.params.pid, patch);
+  res.json({ ok: true, panel: normalizePanel(panel) });
+});
+
+app.post('/api/g/:gid/panels/:pid/send', requireAuth, requireGuild, async (req, res) => {
+  const guild = client.guilds.cache.get(req.params.gid);
+  if (!guild) return res.status(400).json({ error: 'Bot offline.' });
+  const panel = store.getPanel(guild.id, req.params.pid);
+  if (!panel) return res.status(404).json({ error: 'not_found' });
+  const p = normalizePanel(panel);
+  if (!p.channelId) return res.status(400).json({ error: 'Kein Kanal ausgewählt.' });
+  const target = guild.channels.cache.get(p.channelId);
+  if (!target || !target.viewable) return res.status(400).json({ error: 'Kanal nicht verfügbar.' });
+  await target.send({ embeds: [buildPanelEmbed(p, guild.name)], components: panelRow(p) });
+  res.json({ ok: true, channelId: target.id });
 });
 
 app.post('/api/g/:gid/panels/delete', requireAuth, requireGuild, (req, res) => {
@@ -433,7 +543,7 @@ app.post('/api/g/:gid/panel/test', requireAuth, requireGuild, async (req, resp) 
   const { panelId } = req.body || {};
   const panel = store.getPanel(guild.id, panelId);
   if (!panel) return resp.status(404).json({ error: 'not_found' });
-  const r = await createTicket({ guild, creator: guild.members.cache.get(req.session.user.id), panel, topic: 'Dashboard-Test', categoryChannel: null });
+  const r = await createTicket({ guild, creator: guild.members.cache.get(req.session.user.id), panel, topic: 'Dashboard-Test', cat: null });
   resp.json({ ok: r.ok, error: r.error || null, channelId: r.channel?.id || null });
 });
 
