@@ -35,6 +35,68 @@ export function defaultConfig(guildId) {
       title: '🎫 Neues Ticket',
       description: 'Unser Team hilft dir gerne weiter!',
     },
+    moderation: {
+      modlogChannelId: null,
+      modRoles: [],
+      ignoreRoles: [],
+      dmOnAction: true,
+      warnLimit: 0,          // 0 = aus
+      warnAction: 'mute',    // mute | kick | ban
+      autoDeleteMessages: false,
+    },
+    news: { channelId: null, roleId: null, enabled: false },
+    suggestions: {
+      channelId: null,
+      teamRoles: [],
+      requireApproval: false,
+      dmOnDecide: true,
+      reviewChannelId: null,
+      deleteAfterDecide: false,
+      categories: [{ name: 'Allgemein', emoji: '💡', description: 'Allgemeine Vorschläge', active: true }],
+    },
+    welcome: {
+      enabled: false,
+      channelId: null,
+      message: 'Willkommen auf dem Server, {user}! Viel Spaß 🎉',
+      embedEnabled: false,
+      embedTitle: '',
+      embedDescription: '',
+      autoRoles: [],
+      dmEnabled: false,
+      dmMessage: 'Willkommen {user}! Schön, dass du da bist.',
+    },
+    farewell: {
+      enabled: false,
+      channelId: null,
+      message: '{user} hat den Server verlassen. 👋',
+    },
+    stats: { enabled: false, prefix: '📊', channels: [] }, // channels = [{id,name,kind}]
+    support: {
+      enabled: false,
+      lobbyChannelId: null,     // Wo User dazukommen / Button
+      voiceCategoryId: null,    // Kategorie fuer temporaere Voice-Kanaele
+      teamRoleId: null,
+      notifyChannelId: null,
+      tempChannelName: '🎧 Support-{n}',
+      times: [],                // [{day, start, end}]
+    },
+    protection: {
+      enabled: false,
+      verifiedRoleId: null,
+      verifyChannelId: null,
+      kickOnFail: false,
+    },
+    activity: {
+      enabled: false,
+      rewards: [],              // [{messages, roleId}]
+      resetDaily: false,
+    },
+    social: {
+      youtube: [],              // [{channelId, name, lastVideoId, notifyChannelId, roleId}]
+      twitch: [],
+      notifyChannelId: null,
+      lastCheck: 0,
+    },
   };
 }
 
@@ -45,7 +107,10 @@ export class Store {
       panels: {},
       tickets: [],
       actions: [],
-      meta: { ticketSeq: {} },
+      cases: [],
+      suggestions: [],
+      system: { ownerId: null },
+      meta: { ticketSeq: {}, caseSeq: {}, suggestionSeq: {} },
     };
   }
 
@@ -151,6 +216,76 @@ export class Store {
   }
   getActions(guildId, limit = 100) {
     return this.db.actions.filter((a) => a.guildId === guildId).slice(-limit).reverse();
+  }
+
+  // ---------- moderation cases ----------
+  nextCaseSeq(guildId) {
+    const n = (this.db.meta.caseSeq[guildId] || 0) + 1;
+    this.db.meta.caseSeq[guildId] = n;
+    return n;
+  }
+  getCases(guildId, userId = null) {
+    let list = this.db.cases.filter((c) => c.guildId === guildId);
+    if (userId) list = list.filter((c) => c.userId === userId);
+    return list.sort((a, b) => b.at - a.at);
+  }
+  getCase(guildId, id) {
+    return this.db.cases.find((c) => c.guildId === guildId && c.id === id);
+  }
+  addCase(c) {
+    this.db.cases.push(c);
+    if (this.db.cases.length > 5000) this.db.cases = this.db.cases.slice(-5000);
+    this.save();
+    return c;
+  }
+  updateCase(guildId, id, patch) {
+    const c = this.getCase(guildId, id);
+    if (c) {
+      Object.assign(c, patch);
+      this.save();
+    }
+    return c;
+  }
+
+  // ---------- suggestions ----------
+  nextSuggestionSeq(guildId) {
+    const n = (this.db.meta.suggestionSeq[guildId] || 0) + 1;
+    this.db.meta.suggestionSeq[guildId] = n;
+    return n;
+  }
+  getSuggestions(guildId, status = null) {
+    let list = this.db.suggestions.filter((s) => s.guildId === guildId);
+    if (status) list = list.filter((s) => s.status === status);
+    return list.sort((a, b) => b.at - a.at);
+  }
+  getSuggestion(guildId, id) {
+    return this.db.suggestions.find((s) => s.guildId === guildId && s.id === id);
+  }
+  addSuggestion(s) {
+    this.db.suggestions.push(s);
+    this.save();
+    return s;
+  }
+  updateSuggestion(guildId, id, patch) {
+    const s = this.getSuggestion(guildId, id);
+    if (s) {
+      Object.assign(s, patch);
+      this.save();
+    }
+    return s;
+  }
+
+  // ---------- system ----------
+  getSystem() {
+    return this.db.system || (this.db.system = { ownerId: null });
+  }
+  claimOwner(userId) {
+    const sys = this.getSystem();
+    if (!sys.ownerId) {
+      sys.ownerId = userId;
+      this.save();
+    }
+    return sys.ownerId;
   }
 }
 

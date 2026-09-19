@@ -12,7 +12,11 @@ import {
   unclaimTicket,
   addParticipant,
   giveFeedback,
+  clearCloseRequest,
 } from './core.js';
+import { voteSuggestion, decideSuggestion, submitSuggestion, suggestionEmbed, suggestionRow } from './suggestions.js';
+import { verifyCode } from './modules.js';
+import { helpRow, helpEmbed } from './commands-general.js';
 
 export async function handleInteraction(client, i) {
   if (i.isChatInputCommand()) return; // handled via commands.js
@@ -75,6 +79,52 @@ export async function handleInteraction(client, i) {
       if (!isAdminOrStaff) return ack(i, { content: t(cfg, 'errors_no_perm'), ephemeral: true }, true);
       await deleteTicket({ guild, ticket, actor: i.user });
       return ack(i, { content: `🗑️ Ticket **${ticket.id}** wurde gelöscht.`, ephemeral: true }, true);
+    }
+
+    if (cd.startsWith('sug:')) {
+      const [, action, id] = cd.split(':');
+      const s = store.getSuggestion(guild.id, id);
+      if (!s) return ack(i, { content: 'Vorschlag nicht gefunden.', ephemeral: true }, true);
+      if (action === 'up' || action === 'down') {
+        await voteSuggestion({ guild, suggestion: s, voter: i.user, direction: action });
+        await refreshSuggestions(guild, cfg, s);
+        return ack(i, { content: `🗳️ Stimme registriert (${s.up} 👍 / ${s.down} 👎).`, ephemeral: true }, true);
+      }
+      if (action === 'accept' || action === 'decline' || action === 'resetv') {
+        if (!isAdminOrStaff && !(cfg.suggestions?.teamRoles || []).some((r) => member?.roles.cache.has(r))) {
+          return ack(i, { content: t(cfg, 'errors_no_perm'), ephemeral: true }, true);
+        }
+        await decideSuggestion({ guild, suggestion: s, decision: action === 'accept' ? 'accepted' : action === 'decline' ? 'declined' : 'reset', moderator: i.user });
+        return ack(i, { content: action === 'resetv' ? '🔄 Stimmen zurückgesetzt.' : `✅ Vorschlag ${action === 'accept' ? 'angenommen' : 'abgelehnt'}.`, ephemeral: true }, true);
+      }
+      return ack(i, { content: `#${s.seq} · ${s.category} · ${s.up} 👍 / ${s.down} 👎`, ephemeral: true }, true);
+    }
+
+    if (cd.startsWith('tk:reqc:')) {
+      const parts = cd.split(':');
+      const ticketId = parts[2];
+      const v = parts[3];
+      const ticket = store.getTicket(guild.id, ticketId);
+      if (!ticket) return ack(i, { content: 'Ticket nicht gefunden.', ephemeral: true }, true);
+      if (!isAdminOrStaff) return ack(i, { content: t(cfg, 'errors_no_perm'), ephemeral: true }, true);
+      if (v === 'yes') {
+        await closeTicket({ guild, ticket, actor: i.user, reason: ticket.closeRequest || 'Auftragsgemäße Schließung' });
+        return ack(i, { content: `🔒 Ticket **${ticket.id}** wurde geschlossen.`, ephemeral: true }, true);
+      }
+      await clearCloseRequest({ guild, ticket });
+      await guild.channels.cache.get(ticket.channelId)?.send({ content: `↩️ Schließanfrage von <@${ticket.creatorId}> wurde abgelehnt – Ticket bleibt offen.` });
+      return ack(i, { content: 'Schließanfrage verworfen.', ephemeral: true }, true);
+    }
+
+    if (cd.startsWith('verify:') || cd === 'verify') {
+      if (!cfg.protection?.enabled) return ack(i, { content: 'Verifizierung ist deaktiviert.', ephemeral: true }, true);
+      const modal = new ModalBuilder().setCustomId('vcode').setTitle('🔐 Verifizierung');
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId('code').setLabel('Captcha-Code').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('6-stelliger Code aus der DM')
+        )
+      );
+      return i.showModal(modal);
     }
 
     if (cd.startsWith('tk:')) {
@@ -147,7 +197,13 @@ export async function handleInteraction(client, i) {
     }
   }
 
-  // ---------------- Select (Panel) ----------------
+  // ---------------- Select (Help / Panel) ----------------
+  if (i.isStringSelectMenu() && i.customId === 'help:cat') {
+    const cfg = store.ensureConfig(i.guild.id);
+    const focus = i.values[0];
+    return i.reply({ embeds: [helpEmbed(cfg, focus)], components: helpRow(), ephemeral: true });
+  }
+
   if (i.isStringSelectMenu() && i.customId.startsWith('pselect:')) {
     const panelId = i.customId.split(':')[1];
     const panel = store.getPanel(guild.id, panelId);
@@ -164,6 +220,25 @@ export async function handleInteraction(client, i) {
   // ---------------- Modals ----------------
   if (i.isModalSubmit()) {
     const cd = i.customId;
+
+    if (cd === 'vcode') {
+      if (!cfg?.protection?.enabled) return ack(i, { content: 'Verifizierung ist deaktiviert.', ephemeral: true }, true);
+      const code = i.fields.getTextInputValue('code');
+      const r = verifyCode(guild.id, i.user.id, code);
+      if (!r.ok) return ack(i, { content: '❌ Code ungültig oder abgelaufen.', ephemeral: true }, true);
+      if (!cfg.protection.verifiedRoleId) return ack(i, { content: '✅ Verifiziert! (Keine Rolle gesetzt)', ephemeral: true }, true);
+      await i.member.roles.add(cfg.protection.verifiedRoleId, 'Verifiziert').catch(() => {});
+      return ack(i, { content: `✅ Verifiziert – du hast **<@&${cfg.protection.verifiedRoleId}>** erhalten!`, ephemeral: true }, true);
+    }
+
+    if (cd === 'sug:new') {
+      const category = i.fields.getTextInputValue('category');
+      const idea = i.fields.getTextInputValue('idea');
+      if (!idea || idea.length < 5) return ack(i, { content: '❌ Bitte eine ausführlichere Idee eingeben.', ephemeral: true }, true);
+      const res = await submitSuggestion({ guild, author: i.member, category, idea });
+      if (!res.ok) return ack(i, { content: res.error, ephemeral: true }, true);
+      return ack(i, { content: `💡 Vorschlag **${res.suggestion.id}** wurde eingereicht!`, ephemeral: true }, true);
+    }
 
     if (cd.startsWith('close:')) {
       const ticketId = cd.split(':')[1];
@@ -200,6 +275,13 @@ export async function handleInteraction(client, i) {
       return ack(i, { content: `${'⭐'.repeat(Number(stars))} Danke für dein Feedback!`, ephemeral: true }, true);
     }
   }
+}
+
+async function refreshSuggestions(guild, cfg, s) {
+  const ch = cfg.suggestions?.channelId ? guild.channels.cache.get(cfg.suggestions.channelId) : null;
+  if (!ch || !s.messageId) return;
+  const msg = await ch.messages.fetch(s.messageId).catch(() => null);
+  if (msg) await msg.edit({ embeds: [suggestionEmbed(cfg, s)], components: suggestionRow(s) }).catch(() => {});
 }
 
 async function ack(i, payload, ephemeral = true) {

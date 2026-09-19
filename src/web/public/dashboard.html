@@ -5,50 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VBG Dashboard</title>
 <link rel="stylesheet" href="/style.css">
-<style>
-  .app { display: flex; min-height: 100vh; }
-  .side { width: 230px; background: var(--panel); border-right: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; gap: 6px; }
-  .side .brand { font-size: 18px; font-weight: 700; margin-bottom: 12px; }
-  .guild {
-    display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px;
-    cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600;
-  }
-  .guild:hover { background: var(--panel2); color: var(--text); }
-  .guild.active { background: var(--brand); color: #fff; }
-  .guild img { width: 28px; height: 28px; border-radius: 50%; }
-  .guild .no-img { width: 28px; height: 28px; border-radius: 50%; background: var(--panel2); display: flex; align-items: center; justify-content: center; font-size: 12px; }
-  .nav { margin-top: 14px; display: flex; flex-direction: column; gap: 4px; }
-  .nav button { text-align: left; background: none; border: none; color: var(--muted); padding: 9px 10px; border-radius: 8px; font-size: 14px; font-weight: 600; }
-  .nav button:hover { background: var(--panel2); color: var(--text); }
-  .nav button.active { background: var(--panel2); color: var(--text); }
-  .side .foot { margin-top: auto; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 8px; }
-  .main { flex: 1; padding: 26px; max-width: 1100px; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: 14px; }
-  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
-  .stat .val { font-size: 28px; font-weight: 700; }
-  .stat .lab { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-top: 4px; }
-</style>
 </head>
 <body>
   <div class="app">
     <aside class="side" id="side">
-      <div class="brand">🎫 VBG Tickets</div>
-      <div id="guildList"></div>
-      <div class="nav">
-        <button data-view="overview">📊 Übersicht</button>
-        <button data-view="tickets">🎟️ Tickets</button>
-        <button data-view="panels">🧩 Panels</button>
-        <button data-view="logs">📜 Logs</button>
-        <button data-view="settings">⚙️ Einstellungen</button>
+      <div class="brand">
+        <span class="brand-logo">🎫</span>
+        <div>
+          <div class="brand-name">VBG Bot</div>
+          <div class="brand-sub">Dashboard v2.0</div>
+        </div>
       </div>
+      <div id="guildList" class="guild-list"></div>
+      <div class="nav" id="nav"></div>
       <div class="foot">
-        <span id="userInfo"></span>
+        <div id="userInfo"></div>
         <a class="btn ghost sm" href="/auth/logout">↩️ Abmelden</a>
       </div>
     </aside>
-    <main class="main" id="main"><p class="muted">Lade…</p></main>
+    <main class="main" id="main"><div class="splash">Lade…<div class="spinner"></div></div></main>
   </div>
   <div class="toast" id="toast"></div>
+  <div class="modal-back" id="modalBack" hidden>
+    <div class="modal" id="modal"></div>
+  </div>
   <script src="/app.js"></script>
 </body>
 </html>

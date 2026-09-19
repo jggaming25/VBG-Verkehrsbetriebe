@@ -13,6 +13,7 @@ async function autoClose(client) {
     if (!cfg || !cfg.autoCloseMinutes) continue;
     for (const t of store.getTickets(guild.id)) {
       if (t.status !== 'open') continue;
+      if (t.autoActionsEnabled === false) continue;
       const idle = Date.now() - (t.lastActivityAt || t.createdAt);
       if (idle > cfg.autoCloseMinutes * 60_000) {
         try {
@@ -32,6 +33,7 @@ async function autoDelete(client) {
     if (!cfg || !cfg.autoDeleteHours) continue;
     for (const t of store.getTickets(guild.id)) {
       if (t.status !== 'closed' || !t.closedAt) continue;
+      if (t.autoActionsEnabled === false) continue;
       if (Date.now() - t.closedAt > cfg.autoDeleteHours * 3_600_000) {
         try {
           await deleteTicket({ guild, ticket: t, actor: null });

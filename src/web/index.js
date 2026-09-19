@@ -4,10 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import { store } from '../store.js';
-import { client } from '../bot/client.js';
+import { client, stopBot, restartBot, isBotRunning } from '../bot/client.js';
 import { isDashboardAdminCached } from '../auth.js';
 import { uid } from '../util.js';
 import { loginUrl, exchangeCode } from './oauth.js';
+import { refreshServerStats } from '../bot/modules.js';
+import { decideSuggestion } from '../bot/suggestions.js';
 import {
   closeTicket,
   reopenTicket,
@@ -217,6 +219,186 @@ app.post('/api/g/:gid/settings', requireAuth, requireGuild, (req, res) => {
   store.updateConfig(req.params.gid, upd);
   res.json({ ok: true, config: store.ensureConfig(req.params.gid) });
 });
+
+// ---------------- Modul-Konfiguration (generisch) ----------------
+
+app.get('/api/g/:gid/module/:name', requireAuth, requireGuild, (req, res) => {
+  const cfg = store.ensureConfig(req.params.gid);
+  const name = String(req.params.name).replace(/[^a-z]/gi, '');
+  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'protection', 'activity', 'social'];
+  if (!supported.includes(name)) return res.status(400).json({ error: 'unknown_module' });
+  const extra = {};
+  if (name === 'activity') extra.counts = cfg.activityCounts || {};
+  if (name === 'moderation') extra.cases = store.getCases(req.params.gid);
+  if (name === 'suggestions') extra.suggestions = store.getSuggestions(req.params.gid);
+  if (name === 'stats') extra.channels = (cfg.stats?.channels || []).filter((c) => client && client.guilds.cache.get(req.params.gid)?.channels.cache.has(c.id));
+  res.json({ module: name, config: cfg[name] || {}, meta: moduleMeta(req.params.gid, name), ...extra });
+});
+
+app.post('/api/g/:gid/module/:name', requireAuth, requireGuild, (req, res) => {
+  const cfg = store.ensureConfig(req.params.gid);
+  const name = String(req.params.name).replace(/[^a-z]/gi, '');
+  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'protection', 'activity'];
+  if (!supported.includes(name)) return res.status(400).json({ error: 'unknown_module' });
+  if (name === 'social') return res.status(400).json({ error: 'social_immutable_via_generic' });
+  const prev = cfg[name] || {};
+  store.updateConfig(req.params.gid, { [name]: mergeModule(prev, req.body || {}) });
+  res.json({ ok: true, config: store.ensureConfig(req.params.gid)[name] });
+});
+
+function mergeModule(prev, body) {
+  const out = { ...prev };
+  for (const [k, v] of Object.entries(body)) {
+    if (v === null || v === '' || v === undefined) {
+      if (Array.isArray(out[k])) out[k] = [];
+      else delete out[k];
+      continue;
+    }
+    if (Array.isArray(out[k]) && !Array.isArray(v)) {
+      out[k] = Array.isArray(v) ? v : [v];
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function moduleMeta(gid, name) {
+  const guild = client ? client.guilds.cache.get(gid) : null;
+  const chan = (f) => {
+    if (!guild || !f) return [];
+    return guild.channels.cache
+      .filter(f)
+      .map((c) => ({ id: c.id, name: c.name, type: c.type }));
+  };
+  const roles = () => {
+    if (!guild) return [];
+    return guild.roles.cache.filter((r) => r.id !== guild.id).map((r) => ({ id: r.id, name: r.name }));
+  };
+  switch (name) {
+    case 'news':
+      return { channels: chan((c) => c.isTextBased()), roles: roles() };
+    case 'suggestions':
+      return { channels: chan((c) => c.isTextBased()), roles: roles() };
+    case 'welcome':
+    case 'farewell':
+      return { channels: chan((c) => c.isTextBased()), roles: roles() };
+    case 'stats':
+      return { channels: chan((c) => c.type === 2) };
+    case 'support':
+      return { channels: chan(() => true), roles: roles() };
+    case 'protection':
+      return { channels: chan(() => true), roles: roles() };
+    case 'activity':
+      return { channels: chan(() => true), roles: roles() };
+    default:
+      return { channels: [], roles: roles() };
+  }
+}
+
+// ---------------- Modul-Aktionen ----------------
+
+app.post('/api/g/:gid/news/post', requireAuth, requireGuild, async (req, res) => {
+  const guild = client ? client.guilds.cache.get(req.params.gid) : null;
+  const cfg = store.ensureConfig(req.params.gid);
+  const { title, message, image, thumbnail, pingRole } = req.body || {};
+  const chId = cfg.news.channelId;
+  if (!chId) return res.status(400).json({ error: 'Kein News-Kanal konfiguriert.' });
+  const ch = guild && guild.channels.cache.get(chId);
+  if (!ch || !ch.viewable) return res.status(400).json({ error: 'News-Kanal nicht verfügbar.' });
+  const { EmbedBuilder } = await import('discord.js');
+  const e = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(title || '📰 News')
+    .setDescription(message || '')
+    .setTimestamp();
+  if (image) e.setImage(image);
+  if (thumbnail) e.setThumbnail(thumbnail);
+  await ch.send({ content: pingRole ? `<@&${pingRole}>` : undefined, embeds: [e] });
+  res.json({ ok: true });
+});
+
+app.post('/api/g/:gid/stats/setup', requireAuth, requireGuild, async (req, res) => {
+  const guild = client ? client.guilds.cache.get(req.params.gid) : null;
+  if (!guild) return res.status(400).json({ error: 'Bot offline.' });
+  const cfg = store.ensureConfig(req.params.gid);
+  const { kinds = ['👥', '🟢', '⚡', '🎧'], prefix = '📊' } = req.body || {};
+  const created = [];
+  for (const kind of kinds) {
+    if (cfg.stats.channels.some((c) => c.kind === kind && guild.channels.cache.has(c.id))) continue;
+    try {
+      const ch = await guild.channels.create({
+        name: `${prefix} ${kind} …`,
+        type: 2,
+        reason: 'Server-Stats',
+        permissionOverwrites: [{ id: guild.roles.everyone.id, deny: ['Connect'] }, { id: guild.roles.everyone.id, allow: ['ViewChannel'] }],
+      });
+      cfg.stats.channels.push({ id: ch.id, kind });
+      created.push(ch.id);
+    } catch (e) {
+      console.error('[STATS] Setup:', e.message);
+    }
+  }
+  store.updateConfig(req.params.gid, { stats: { ...cfg.stats, enabled: true, prefix } });
+  await refreshServerStats(guild).catch(() => {});
+  res.json({ ok: true, created, channels: store.ensureConfig(req.params.gid).stats.channels });
+});
+
+app.post('/api/g/:gid/suggestions/:sid/decide', requireAuth, requireGuild, async (req, res) => {
+  const guild = client ? client.guilds.cache.get(req.params.gid) : null;
+  const { decision, reason } = req.body || {};
+  const s = store.getSuggestion(req.params.gid, req.params.sid.toUpperCase());
+  if (!s) return res.status(404).json({ error: 'not_found' });
+  const actor = { id: req.session.user.id, user: { tag: req.session.user.tag } };
+  const r = await decideSuggestion({ guild, suggestion: s, decision, moderator: actor, reason });
+  res.json({ ok: r.ok, suggestion: s });
+});
+
+// ---------------- System-Controlling (Stopp / Start / Neustart) ----------------
+
+app.get('/api/system', requireAuth, (req, res) => {
+  const sys = store.getSystem();
+  res.json({ running: isBotRunning(), ownerId: sys.ownerId || null, isOwner: req.session.user.id === sys.ownerId });
+});
+
+app.post('/api/system/control', requireAuth, async (req, res) => {
+  const sys = store.getSystem();
+  const claimed = store.claimOwner(req.session.user.id);
+  if (req.session.user.id !== claimed) return res.status(403).json({ error: 'forbidden' });
+  const action = String((req.body || {}).action || '');
+  try {
+    if (action === 'stop') {
+      if (!isBotRunning()) return res.json({ ok: true, running: false, message: 'Bot läuft bereits nicht.' });
+      await stopBot();
+      return res.json({ ok: true, running: false, message: 'Bot gestoppt.' });
+    }
+    if (action === 'start') {
+      if (isBotRunning()) return res.json({ ok: true, running: true, message: 'Bot läuft bereits.' });
+      await import('../bot/control.js').then(async ({ clearFlag }) => {
+        clearFlag();
+      });
+      await startBotSafe();
+      return res.json({ ok: true, running: true, message: 'Bot gestartet.' });
+    }
+    if (action === 'restart') {
+      const clientNow = (await import('../bot/client.js')).client;
+      await restartBot();
+      return res.json({ ok: true, running: isBotRunning(), message: 'Neustart angestoßen.' });
+    }
+    res.status(400).json({ error: 'unknown_action' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function startBotSafe() {
+  const { startBot } = await import('../bot/client.js');
+  try {
+    await startBot();
+  } catch (e) {
+    console.error('[WEB] Bot-Start fehlgeschlagen:', e.message);
+  }
+}
 
 app.post('/api/g/:gid/panels/create', requireAuth, requireGuild, async (req, res) => {
   const guild = client.guilds.cache.get(req.params.gid);

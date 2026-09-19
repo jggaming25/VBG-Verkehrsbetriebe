@@ -3,6 +3,9 @@ import { store } from '../store.js';
 import { t } from '../i18n.js';
 import { isAdmin, isStaff } from '../auth.js';
 import { more } from './commands-more.js';
+import { ticketGroup } from './commands-ticket.js';
+import { moderation } from './commands-moderation.js';
+import { general } from './commands-general.js';
 import {
   createTicket,
   closeTicket,
@@ -215,4 +218,4 @@ const base = [
   },
 ];
 
-export const commands = [...base, ...more];
+export const commands = [...base, ...more, ...ticketGroup, ...moderation, ...general];

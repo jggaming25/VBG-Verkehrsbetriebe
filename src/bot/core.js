@@ -188,6 +188,11 @@ export async function createTicket({ guild, creator, panel, topic, categoryChann
     reopenCount: 0,
     transcriptPath: null,
     feedback: null,
+    autoActionsEnabled: true,
+    alertRoleId: null,
+    closeRequest: null,
+    closeRequestBy: null,
+    notes: [],
   };
   store.addTicket(ticket);
 
@@ -248,6 +253,8 @@ export async function closeTicket({ guild, ticket, actor, reason, auto = false }
     closeReason: reason || null,
     closeBy: auto ? null : actor ? actor.id : null,
     closeByTag: auto ? null : actor ? actor.user.tag : null,
+    closeRequest: null,
+    closeRequestBy: null,
     lastActivityAt: Date.now(),
   };
   if (cfg.autoTranscripts && channel && channel.viewable) {
@@ -434,6 +441,110 @@ export async function giveFeedback({ guild, ticket, stars, comment, actor }) {
   return { ok: true, feedback: feed };
 }
 
+// ---------------------------------------------------------------- closerequest
+
+export async function requestTicketClose({ guild, ticket, actor, reason }) {
+  const cfg = store.ensureConfig(guild.id);
+  const patch = { closeRequest: reason || null, closeRequestBy: actor.id, lastActivityAt: Date.now() };
+  store.updateTicket(ticket.id, patch);
+  Object.assign(ticket, patch);
+  const channel = guild.channels.cache.get(ticket.channelId);
+  if (channel) {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`tk:reqc:${ticket.id}:yes`).setLabel('Ja, schließen').setStyle(ButtonStyle.Danger).setEmoji('🔒'),
+      new ButtonBuilder().setCustomId(`tk:reqc:${ticket.id}:no`).setLabel('Nein, Ticket offen lassen').setStyle(ButtonStyle.Secondary)
+    );
+    const e = new EmbedBuilder()
+      .setColor(0xf5c542)
+      .setTitle('🔔 Schließanfrage')
+      .setDescription(`<@${ticket.creatorId}> möchte das Ticket schließen.`)
+      .addFields({ name: 'Grund', value: (reason || 'Kein Grund angegeben.').slice(0, 200) })
+      .setTimestamp();
+    await channel.send({ embeds: [e], components: [row] });
+  }
+  logAction(guild, 'closerequest', { ticket, actor, detail: reason || '' });
+  await sendLog(guild, 'closerequest', cfg, { ticket, actor, detail: reason || '' });
+  return { ok: true, ticket };
+}
+
+export async function clearCloseRequest({ guild, ticket }) {
+  store.updateTicket(ticket.id, { closeRequest: null, closeRequestBy: null });
+  ticket.closeRequest = null;
+  ticket.closeRequestBy = null;
+  return { ok: true };
+}
+
+export async function forwardTicket({ guild, ticket, actor, category, targetRole }) {
+  const cfg = store.ensureConfig(guild.id);
+  const channel = guild.channels.cache.get(ticket.channelId);
+  if (!channel) return { ok: false, error: 'Kanal nicht gefunden.' };
+  const cat = guild.channels.cache.get(category);
+  if (cat && cat.type !== ChannelType.GuildCategory) return { ok: false, error: 'Bitte eine Kategorie angeben.' };
+  if (cat) await channel.setParent(cat.id, { lockPermissions: false });
+  const patch = { categoryName: cat ? cat.name : ticket.categoryName, lastActivityAt: Date.now() };
+  if (targetRole) patch.alertRoleId = targetRole.id;
+  store.updateTicket(ticket.id, patch);
+  Object.assign(ticket, patch);
+  if (channel) {
+    const ping = targetRole ? `\n<@&${targetRole.id}>` : '';
+    await channel.send({ content: `📨 **Weiterleitung** durch <@${actor.id}>${cat ? ` an **${cat.name}**` : ''}.${ping}` });
+  }
+  logAction(guild, 'forwarded', { ticket, actor, detail: cat ? cat.name : '' });
+  await sendLog(guild, 'forwarded', cfg, { ticket, actor, detail: cat ? cat.name : '' });
+  return { ok: true, ticket };
+}
+
+export async function setTicketAlert({ guild, ticket, actor, role, channel }) {
+  const cfg = store.ensureConfig(guild.id);
+  const patch = { alertRoleId: role ? role.id : null, lastActivityAt: Date.now() };
+  if (role && channel && channel.viewable) {
+    await channel.send({ content: `🚨 <@&${role.id}> – Ticket **${ticket.id}** benötigt Aufmerksamkeit (<@${actor.id}>)` });
+  }
+  store.updateTicket(ticket.id, patch);
+  Object.assign(ticket, patch);
+  logAction(guild, 'alert', { ticket, actor, detail: role ? `<@&${role.id}>` : '–' });
+  return { ok: true, ticket };
+}
+
+export async function addTicketNote({ guild, ticket, actor, text }) {
+  const cfg = store.ensureConfig(guild.id);
+  const note = { id: uid(), text, byName: actor.user.tag, byId: actor.id, at: Date.now() };
+  ticket.notes = [...(ticket.notes || []), note];
+  store.updateTicket(ticket.id, { notes: ticket.notes });
+  logAction(guild, 'note', { ticket, actor, detail: text.slice(0, 120) });
+  return { ok: true, note };
+}
+
+export async function clearTicketNotes({ guild, ticket, actor }) {
+  const cfg = store.ensureConfig(guild.id);
+  store.updateTicket(ticket.id, { notes: [] });
+  ticket.notes = [];
+  logAction(guild, 'notes_cleared', { ticket, actor });
+  return { ok: true };
+}
+
+export async function setAutoActions({ guild, ticket, enabled }) {
+  const cfg = store.ensureConfig(guild.id);
+  store.updateTicket(ticket.id, { autoActionsEnabled: enabled });
+  ticket.autoActionsEnabled = enabled;
+  logAction(guild, enabled ? 'autoactions_on' : 'autoactions_off', { ticket });
+  return { ok: true, ticket };
+}
+
+export async function createOnBehalf({ guild, actor, target, topic, categoryChannel }) {
+  const res = await createTicket({ guild, creator: target, topic, categoryChannel });
+  if (!res.ok) return res;
+  if (actor) {
+    const channel = res.channel;
+    try {
+      await ovw(channel, actor.id, STAFF);
+    } catch { /* ignore */ }
+    logAction(guild, 'onbehalf', { ticket: res.ticket, actor, detail: `für <@${target.id}>` });
+    await channel.send({ content: `📌 Ticket wurde im Namen von <@${target.id}> durch <@${actor.id}> erstellt.` });
+  }
+  return res;
+}
+
 // ---------------------------------------------------------------- logs
 
 const LOG_STYLES = {
@@ -448,6 +559,14 @@ const LOG_STYLES = {
   removed: [0xed4245, '➖ Benutzer entfernt'],
   feedback: [0x7b5cff, '⭐ Feedback erhalten'],
   transcript: [0x00ffba, '📄 Transkript exportiert'],
+  closerequest: [0xf5c542, '🔔 Schließanfrage'],
+  forwarded: [0x00b0f4, '📨 Weitergeleitet'],
+  alert: [0xeb4034, '🚨 Alert'],
+  note: [0x71368a, '📝 Notiz'],
+  notes_cleared: [0x71368a, '🗒️ Notizen gelöscht'],
+  autoactions_off: [0xeb4034, '⏸️ Auto-Aktionen deaktiviert'],
+  autoactions_on: [0x00ffba, '▶️ Auto-Aktionen aktiviert'],
+  onbehalf: [0x5865f2, '📌 Im Namen erstellt'],
 };
 
 export function logAction(guild, type, { ticket, actor, detail } = {}) {
@@ -493,6 +612,9 @@ export function ticketInfoEmbed(cfg, ticket) {
     .setTimestamp();
   if (ticket.topic) e.addFields({ name: 'Thema', value: String(ticket.topic), inline: true });
   if (ticket.claimedBy) e.addFields({ name: t(cfg, 'ticket_claimed_by'), value: `<@${ticket.claimedBy}>`, inline: true });
+  if (ticket.closeRequest) e.addFields({ name: '🔔 Schließanfrage', value: String(ticket.closeRequest).slice(0, 200) });
+  if (ticket.alertRoleId) e.addFields({ name: '🚨 Alert-Rolle', value: `<@&${ticket.alertRoleId}>`, inline: true });
+  if (ticket.notes && ticket.notes.length) e.addFields({ name: '📝 Notizen', value: `${ticket.notes.length} privat` });
   if (ticket.createdAt) e.addFields({ name: 'Erstellt', value: `<t:${Math.floor(ticket.createdAt / 1000)}:F>`, inline: true });
   if (ticket.closedAt) e.addFields({ name: 'Geschlossen', value: `<t:${Math.floor(ticket.closedAt / 1000)}:F>`, inline: true });
   if (ticket.closeReason) e.addFields({ name: t(cfg, 'ticket_closed_reason'), value: ticket.closeReason.slice(0, 200) });

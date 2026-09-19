@@ -1,5 +1,6 @@
 const state = {
   data: null,
+  sys: { running: false, ownerId: null, isOwner: false },
   guildIndex: 0,
   view: 'overview',
   ticketFilter: 'all',
@@ -8,19 +9,19 @@ const state = {
 
 const $ = (s) => document.querySelector(s);
 const main = () => $('#main');
-const toast = (msg) => {
+const toast = (m, t = 2600) => {
   const el = $('#toast');
-  el.textContent = msg;
+  el.textContent = m;
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2600);
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), t);
 };
 
 function esc(v) {
   return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function fmt(ts) {
-  if (!ts) return '–';
-  return new Date(ts).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+  return ts ? new Date(ts).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '–';
 }
 function ago(ts) {
   if (!ts) return '–';
@@ -30,43 +31,103 @@ function ago(ts) {
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
 }
-function guildUrl(g) {
+function guildIcon(g) {
   return g.icon ? `https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png` : null;
 }
 
-async function fetchJSON(url, opts) {
+async function api(url, opts) {
   const r = await fetch(url, opts);
   if (r.status === 401) { location.href = '/auth/login'; throw new Error('login'); }
-  if (r.status === 403) { throw new Error('Keine Berechtigung – du benötigst die Admin-Rolle.'); }
+  if (r.status === 403) throw new Error('Keine Berechtigung – Admin-Rolle erforderlich.');
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || 'Fehler');
   return j;
 }
+const jsonBody = (body) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+// ---------------------------------------------------------------- system modal / confirm
+
+function openModal(html) {
+  const back = $('#modalBack');
+  const mod = $('#modal');
+  mod.innerHTML = html;
+  back.hidden = false;
+  return new Promise((resolve) => {
+    const _close = (val) => { back.hidden = true; mod.innerHTML = ''; resolve(val); };
+    back.querySelectorAll('[data-yes]').forEach((b) => b.addEventListener('click', () => _close(true)));
+    back.querySelectorAll('[data-no]').forEach((b) => b.addEventListener('click', () => _close(false)));
+    back.addEventListener('click', (e) => { if (e.target === back) _close(false); });
+  });
+}
+function confirmModal(title, msg, yesLabel, danger) {
+  return openModal(`
+    <h3>${esc(title)}</h3>
+    <p>${esc(msg)}</p>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn ghost sm" data-no>Abbrechen</button>
+      <button class="btn sm ${danger ? 'red' : 'green'}" data-yes>${esc(yesLabel)}</button>
+    </div>`);
+}
+
+// ---------------------------------------------------------------- init
+
+const NAV = [
+  { group: 'Ticket-System' },
+  { id: 'overview', icon: '📊', label: 'Übersicht' },
+  { id: 'tickets', icon: '🎟️', label: 'Tickets' },
+  { id: 'panels', icon: '🧩', label: 'Panels' },
+  { group: 'Module' },
+  { id: 'suggestions', icon: '💡', label: 'Vorschläge' },
+  { id: 'news', icon: '📰', label: 'News' },
+  { id: 'moderation', icon: '🛡️', label: 'Moderation' },
+  { id: 'welcome', icon: '👋', label: 'Welcome & Leave' },
+  { id: 'stats', icon: '📈', label: 'Server Stats' },
+  { id: 'support', icon: '🎧', label: 'Support / Voice' },
+  { id: 'protection', icon: '🔐', label: 'Guild Protection' },
+  { id: 'activity', icon: '🏅', label: 'Activity Rewards' },
+  { id: 'social', icon: '📱', label: 'Social Media' },
+  { group: 'Verwaltung' },
+  { id: 'settings', icon: '⚙️', label: 'Einstellungen' },
+  { id: 'logs', icon: '📜', label: 'Audit-Logs' },
+  { id: 'system', icon: '🖥️', label: 'System' },
+];
 
 async function refreshState() {
-  state.data = await fetchJSON('/api/state');
+  state.data = await api('/api/state');
+}
+
+async function refreshSystem() {
+  try {
+    state.sys = await api('/api/system');
+  } catch {
+    state.sys = { running: false, ownerId: null, isOwner: false };
+  }
+  const pill = $('#sysPill');
+  if (pill) {
+    pill.className = 'system-pill ' + (state.sys.running ? 'on' : 'off');
+    pill.innerHTML = `<span class="dot"></span>${state.sys.running ? 'Bot online' : 'Bot gestoppt'}`;
+  }
 }
 
 async function init() {
-  try {
-    await refreshState();
-  } catch (e) {
-    $('#userInfo').textContent = e.message;
-    return;
-  }
+  await Promise.all([refreshState().catch((e) => toast(e.message)), refreshSystem()]);
   const u = state.data.user;
   $('#userInfo').innerHTML = `<b>${esc(u.global_name || u.username)}</b>`;
-  bindNav();
+  renderNav();
   renderGuildList();
   render();
+  setInterval(refreshSystem, 15000);
 }
 
-function bindNav() {
-  document.querySelectorAll('.nav button').forEach((b) =>
+function renderNav() {
+  $('#nav').innerHTML = NAV.map((e) => e.group ? `<div class="group">${esc(e.group)}</div>` : `
+    <button data-view="${e.id}" class="${state.view === e.id ? 'active' : ''}">
+      <span>${e.icon}</span>${esc(e.label)}
+    </button>`).join('');
+  document.querySelectorAll('#nav button').forEach((b) =>
     b.addEventListener('click', () => {
       state.view = b.dataset.view;
-      document.querySelectorAll('.nav button').forEach((x) => x.classList.remove('active'));
-      b.classList.add('active');
+      renderNav();
       render();
     })
   );
@@ -75,14 +136,14 @@ function bindNav() {
 function renderGuildList() {
   const list = $('#guildList');
   if (!state.data.guilds.length) {
-    list.innerHTML = '<p class="muted" style="font-size:12px">Kein Server mit Admin-Rechten.</p>';
+    list.innerHTML = '<p class="muted small" style="padding: 8px 10px">Kein Server mit Admin-Rechten.</p>';
     return;
   }
   state.guildIndex = Math.min(state.guildIndex, state.data.guilds.length - 1);
   list.innerHTML = state.data.guilds
     .map((g, i) => {
       const gd = g.guild;
-      const img = guildUrl(gd);
+      const img = guildIcon(gd);
       return `<div class="guild ${i === state.guildIndex ? 'active' : ''}" data-gidx="${i}">
         ${img ? `<img src="${img}" alt="">` : `<div class="no-img">${esc(gd.name[0].toUpperCase())}</div>`}
         <span>${esc(gd.name)}</span></div>`;
@@ -100,31 +161,139 @@ function renderGuildList() {
 function current() {
   return state.data.guilds[state.guildIndex];
 }
+function gid() {
+  return current().guild.id;
+}
 
-// ---------------------------------------------------------------- views
+// ---------------------------------------------------------------- router
 
 function render() {
-  if (!state.data || !state.data.guilds.length) {
-    main().innerHTML = '<p class="muted">Kein Server verfügbar.</p>';
+  if (!state.data) return;
+  if (!state.data.guilds.length) {
+    renderNoGuild();
     return;
   }
   const view = state.view;
   if (!state.data.guilds[state.guildIndex]) { state.guildIndex = 0; renderGuildList(); }
-  if (view === 'overview') renderOverview();
-  else if (view === 'tickets') renderTickets();
-  else if (view === 'panels') renderPanels();
-  else if (view === 'logs') renderLogs();
-  else if (view === 'settings') renderSettings();
+  const handlers = {
+    overview: renderOverview,
+    tickets: renderTickets,
+    panels: renderPanels,
+    suggestions: () => renderModule('suggestions', viewSuggestions),
+    news: () => renderModule('news', viewNews),
+    moderation: () => renderModule('moderation', viewModeration),
+    welcome: () => renderModule('welcome', viewWelcome),
+    stats: () => renderModule('stats', viewStats),
+    support: () => renderModule('support', viewSupport),
+    protection: () => renderModule('protection', viewProtection),
+    activity: () => renderModule('activity', viewActivity),
+    social: () => renderModule('social', viewSocial),
+    settings: renderSettings,
+    logs: renderLogs,
+    system: renderSystem,
+  };
+  (handlers[view] || renderOverview)();
 }
 
-function statCard(val, lab, color) {
-  return `<div class="stat"><div class="val" style="color:${color || 'var(--text)'}">${val}</div><div class="lab">${lab}</div></div>`;
+function renderNoGuild() {
+  main().innerHTML = `
+    <div class="hero"><div class="icon">🤖</div><div class="t">
+      <h1>Willkommen!</h1>
+      <p class="sub">${state.sys.running ? 'Kein Server verfügbar – lade den Bot in deinen Server ein und stelle sicher, dass du die Admin-Rolle hast.' : 'Der Bot ist aktuell gestoppt. Er kann über System wieder gestartet werden.'}</p>
+    </div></div>
+    ${state.sys.running ? '' : `<div class="card danger-zone mt">
+      <div class="row between wrap">
+        <div><b>Bot ist gestoppt</b><p class="muted small">Starte den Bot neu, um das Dashboard zu nutzen.</p></div>
+        <button class="btn green" id="sysStart">▶️ Bot starten</button>
+      </div>
+    </div>`}`;
+  const sb = $('#sysStart');
+  if (sb) sb.addEventListener('click', () => control('start', 'Bot starten', 'Soll der Bot wirklich gestartet werden?'));
+  if (!$('#sysPill')) bindSysPill();
+}
+
+function bindSysPill() {
+  const pill = document.createElement('span');
+  pill.id = 'sysPill';
+  pill.className = 'system-pill ' + (state.sys.running ? 'on' : 'off');
+  pill.innerHTML = `<span class="dot"></span>${state.sys.running ? 'Bot online' : 'Bot gestoppt'}`;
+  $('#userInfo').appendChild(document.createElement('br'));
+  $('#userInfo').appendChild(pill);
+}
+
+// ---------------------------------------------------------------- system
+
+function renderSystem() {
+  const s = state.sys;
+  main().innerHTML = `
+    <div class="hero"><div class="icon">🖥️</div><div class="t">
+      <h1>System-Verwaltung</h1>
+      <p class="sub">Stoppen und Neustarten des Bots – nützlich z.B. nach Update-Deploys.</p>
+    </div><span class="system-pill ${s.running ? 'on' : 'off'}" id="sysPill"><span class="dot"></span>${s.running ? 'Bot online' : 'Bot gestoppt'}</span></div>
+
+    <div class="grid g2">
+      <div class="card">
+        <h3>⚙️ Betrieb</h3>
+        <p class="muted small mt">Status, Verbindung und Command-Registrierung.</p>
+        <div class="row mt wrap">
+          <button class="btn green" id="ctrlRestart" ${s.running ? '' : 'disabled'}>🔄 Neustart</button>
+          <button class="btn red" id="ctrlStop" ${s.running ? '' : 'disabled'}>⏹️ Stoppen</button>
+          <button class="btn ghost" id="ctrlStart" ${s.running ? 'disabled' : ''}>▶️ Starten</button>
+        </div>
+        <p class="muted small mt" id="sysMsg">${s.isOwner ? 'Du bist der System-Owner und darfst steuern.' : s.ownerId ? '⚠️ Ein anderer Benutzer ist als System-Owner festgelegt – nur er kann steuern.' : 'Du wirst beim ersten Befehl automatisch als System-Owner festgelegt.'}</p>
+      </div>
+      <div class="card">
+        <h3>ℹ️ Informationen</h3>
+        <p class="muted small mt">Nach einem <b>Neustart</b> loggt sich der Bot neu ein und registriert die Slash-Commands frisch. Falls du neuen Code gepusht hast, deployt Render automatisch – für einen sofortigen Update-Rollout:<br><br>
+        <code>Push → Render Man. Deploy → dann hier „🔄 Neustart“</code> klicken.</p>
+        <p class="muted small mt"><b>Stoppen:</b> Der Bot wird sauber getrennt, das Dashboard bleibt erreichbar. Danach mit „▶️ Starten“ wieder aktivieren.</p>
+      </div>
+    </div>`;
+
+  $('#ctrlRestart').addEventListener('click', async () => {
+    const ok = await confirmModal('Bot neu starten?', 'Der Bot wird abgemeldet und frisch eingeloggt (z.B. nach Updates). Das dauert wenige Sekunden.', 'Neu starten');
+    if (!ok) return;
+    await doControl('restart', '🔄 Neustart angestoßen…');
+  });
+  $('#ctrlStop').addEventListener('click', async () => {
+    const ok = await confirmModal('Bot stoppen?', 'Der Bot wird vom Discord-Server getrennt. Das Dashboard bleibt erreichbar. Tickets/Aktionen sind währenddessen nicht möglich.', 'Stoppen', true);
+    if (!ok) return;
+    await doControl('stop', '🛑 Bot wurde gestoppt.');
+  });
+  $('#ctrlStart').addEventListener('click', async () => {
+    const ok = await confirmModal('Bot starten?', 'Starte den Bot neu (einloggen + Commands registrieren).', 'Starten');
+    if (!ok) return;
+    await doControl('start', '▶️ Bot wird gestartet…');
+  });
+}
+
+async function doControl(action, msg) {
+  try {
+    const r = await api('/api/system/control', jsonBody({ action }));
+    toast(msg);
+    await refreshSystem();
+    await refreshState();
+    render();
+    setTimeout(() => { location.reload(); }, 1200);
+  } catch (e) {
+    toast(e.message);
+    await refreshSystem();
+    render();
+  }
+}
+const control = doControl;
+
+// ---------------------------------------------------------------- overview
+
+function statCard(val, lab, extra) {
+  return `<div class="stat"><div class="val">${val}</div><div class="lab">${lab}</div>${extra || ''}</div>`;
 }
 
 function ticketRow(t) {
+  const st = t.status === 'claimed' ? 'claimed' : t.status === 'closed' ? 'closed' : t.status === 'deleted' ? 'deleted' : 'open';
   return `<tr class="clickable" data-tid="${esc(t.id)}">
-    <td>${esc(t.id)}</td>
-    <td><span class="badge ${t.status}">${esc(t.status)}</span></td>
+    <td><b>${esc(t.id)}</b></td>
+    <td><span class="badge ${st}">${esc(t.status)}</span></td>
     <td>${esc(t.topic || '–')}</td>
     <td>${esc(t.creatorName)}</td>
     <td>${t.claimedBy ? `<code>${esc(t.claimedBy)}</code>` : '–'}</td>
@@ -137,154 +306,166 @@ function renderOverview() {
   const g = current();
   const s = g.stats;
   main().innerHTML = `
-    <h1 style="margin-bottom:18px">${esc(g.guild.name)}</h1>
-    <div class="stats">
-      ${statCard(s.open, 'Offen', 'var(--green)')}
-      ${statCard(s.claimed, 'Geclaimt', 'var(--yellow)')}
-      ${statCard(s.closed, 'Geschlossen', 'var(--red)')}
+    <div class="hero"><div class="icon">📊</div><div class="t">
+      <h1>${esc(g.guild.name)}</h1>
+      <p class="sub">Zeige mir die wichtigsten Kennzahlen deines Ticket-Systems.</p>
+    </div></div>
+    <div class="stats grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">
+      ${statCard(s.open, 'Offen', '<span style="color:var(--green)">●</span>')}
+      ${statCard(s.claimed, 'Geclaimt', '<span style="color:var(--yellow)">●</span>')}
+      ${statCard(s.closed, 'Geschlossen', '<span style="color:var(--red)">●</span>')}
       ${statCard(s.total, 'Gesamt')}
       ${statCard(s.week, 'Diese Woche')}
       ${statCard(s.avgResponse ? s.avgResponse + 's' : '–', 'Ø Antwortzeit')}
       ${statCard(s.avgStars ? '⭐ ' + s.avgStars : '–', 'Ø Bewertung')}
     </div>
-    <h2 class="mt">Aktuelle Tickets</h2>
+    <h2>Aktuelle Tickets</h2>
     <div class="card mt">
       <table>
         <thead><tr><th>ID</th><th>Status</th><th>Thema</th><th>Ersteller</th><th>Claimed</th><th>Erstellt</th><th>Aktivität</th></tr></thead>
-        <tbody>
-          ${g.recentTickets.length ? g.recentTickets.map(ticketRow).join('') : '<tr><td colspan="7" class="muted">Noch keine Tickets.</td></tr>'}
-        </tbody>
+        <tbody>${g.recentTickets.length ? g.recentTickets.map(ticketRow).join('') : '<tr><td colspan="7" class="muted">Noch keine Tickets.</td></tr>'}</tbody>
       </table>
     </div>`;
   bindTicketRows();
 }
 
 function renderTickets() {
-  const gid = current().guild.id;
+  const gidV = gid();
   const tabs = ['all', 'open', 'claimed', 'closed', 'deleted'];
   main().innerHTML = `
-    <div class="row" style="justify-content:space-between;flex-wrap:wrap">
-      <h1>Tickets</h1>
+    <div class="hero"><div class="icon">🎟️</div><div class="t">
+      <h1>Tickets</h1><p class="sub">Alle Tickets mit Filter, Suche und Details inkl. Transkript.</p>
+    </div></div>
+    <div class="row between wrap">
       <div class="tabs">
         ${tabs.map((x) => `<button class="tab ${state.ticketFilter === x ? 'active' : ''}" data-f="${x}">${esc(x)}</button>`).join('')}
       </div>
+      <input style="max-width:300px" placeholder="🔍 Suchen (ID, Creator, Thema)…" id="tSearch" value="${esc(state.ticketSearch)}">
     </div>
-    <input class="mt" style="max-width:340px" placeholder="🔍 Suchen (ID, Creator, Thema)…" id="tSearch">
     <div class="card mt"><table>
       <thead><tr><th>ID</th><th>Status</th><th>Thema</th><th>Ersteller</th><th>Claimed</th><th>Erstellt</th><th>Aktivität</th></tr></thead>
-      <tbody id="tBody"></tbody></table></div>`;
+      <tbody id="tBody"><tr><td colspan="7" class="muted">Lade…</td></tr></tbody></table></div>`;
 
   document.querySelectorAll('.tab').forEach((b) =>
-    b.addEventListener('click', () => {
-      state.ticketFilter = b.dataset.f;
-      renderTickets();
-    })
-  );
+    b.addEventListener('click', () => { state.ticketFilter = b.dataset.f; renderTickets(); }));
   $('#tSearch').addEventListener('input', (e) => {
     state.ticketSearch = e.target.value.toLowerCase();
-    loadTickets(gid);
+    loadTickets(gidV);
   });
-  loadTickets(gid);
+  loadTickets(gidV);
 }
 
-async function loadTickets(gid) {
-  const data = await fetchJSON(`/api/g/${gid}/tickets?status=${state.ticketFilter}`);
+async function loadTickets(gidV) {
+  const data = await api(`/api/g/${gidV}/tickets?status=${state.ticketFilter}`);
   const q = state.ticketSearch;
   let list = data.tickets;
-  if (q) {
-    list = list.filter((t) =>
-      [t.id, t.creatorName, t.creatorTag, t.topic, t.channelName].join(' ').toLowerCase().includes(q)
-    );
+  if (q) list = list.filter((t) => [t.id, t.creatorName, t.creatorTag, t.topic, t.channelName].join(' ').toLowerCase().includes(q));
+  const body = $('#tBody');
+  if (body) {
+    body.innerHTML = list.length ? list.map(ticketRow).join('') : '<tr><td colspan="7" class="muted">Keine Tickets gefunden.</td></tr>';
+    bindTicketRows();
   }
-  $('#tBody').innerHTML = list.length ? list.map(ticketRow).join('') : '<tr><td colspan="7" class="muted">Keine Tickets gefunden.</td></tr>';
-  bindTicketRows();
 }
 
 function bindTicketRows() {
-  document.querySelectorAll('tr[data-tid]').forEach((tr) =>
-    tr.addEventListener('click', () => showTicket(tr.dataset.tid))
-  );
+  document.querySelectorAll('tr[data-tid]').forEach((tr) => tr.addEventListener('click', () => showTicket(tr.dataset.tid)));
 }
 
 async function showTicket(id) {
   const g = current();
-  const data = await fetchJSON(`/api/g/${g.guild.id}/tickets/${id}`);
+  const data = await api(`/api/g/${g.guild.id}/tickets/${id}`);
   const t = data.ticket;
   const fb = t.feedback;
   main().innerHTML = `
-    <div class="row" style="justify-content:space-between;flex-wrap:wrap">
-      <h1>${esc(t.id)} <span class="badge ${t.status}">${esc(t.status)}</span></h1>
+    <div class="row between wrap">
+      <div class="row"><a class="btn ghost sm" href="javascript:void(0)" id="bBack">← Zurück</a>
+        <h1 style="margin:0 0 0 10px">${esc(t.id)} <span class="badge ${t.status}">${esc(t.status)}</span></h1>
+      </div>
       <div class="row">
-        <a class="btn ghost sm" href="#overview" onclick="window.__back()">← Zurück</a>
         ${t.status !== 'deleted' && t.status !== 'closed' ? `<button class="btn sm red" data-act="close">🔒 Schließen</button>` : ''}
         ${t.status === 'closed' ? `<button class="btn sm yellow" data-act="reopen">🔓 Wieder öffnen</button>` : ''}
         ${t.status !== 'deleted' ? `<button class="btn sm red" data-act="delete">🗑️ Löschen</button>` : ''}
       </div>
     </div>
     <div class="grid g2 mt">
-      <div class="card"><b>Ersteller</b><p>${esc(t.creatorName)} (<code>${esc(t.creatorTag)}</code>)</p></div>
-      <div class="card"><b>Thema</b><p>${esc(t.topic || '–')}</p></div>
-      <div class="card"><b>Kanal</b><p>${t.channelName ? `<code>#${esc(t.channelName)}</code>` : '(gelöscht)'}</p></div>
-      <div class="card"><b>Erstellt</b><p>${fmt(t.createdAt)}</p></div>
-      ${t.claimedBy ? `<div class="card"><b>Claimed von</b><p><code>${esc(t.claimedBy)}</code> (${fmt(t.claimAt)})</p></div>` : ''}
-      ${t.closeReason ? `<div class="card"><b>Schließgrund</b><p>${esc(t.closeReason)}</p></div>` : ''}
-      ${fb ? `<div class="card"><b>Feedback</b><p>${'⭐'.repeat(fb.stars)}${'☆'.repeat(5 - fb.stars)}${fb.comment ? `<br>${esc(fb.comment)}` : ''}</p></div>` : ''}
-      <div class="card"><b>Nachrichten</b><p>${t.messageCount}</p></div>
-      ${t.firstResponseAt ? `<div class="card"><b>Erste Antwort</b><p>${fmt(t.firstResponseAt)}</p></div>` : ''}
+      <div class="card"><b>Ersteller</b><p class="mt small">${esc(t.creatorName)} (<code>${esc(t.creatorTag)}</code>)</p></div>
+      <div class="card"><b>Thema</b><p class="mt small">${esc(t.topic || '–')}</p></div>
+      <div class="card"><b>Kanal</b><p class="mt small">${t.channelName ? `<code>#${esc(t.channelName)}</code>` : '(gelöscht)'}</p></div>
+      <div class="card"><b>Erstellt</b><p class="mt small">${fmt(t.createdAt)}</p></div>
+      ${t.claimedBy ? `<div class="card"><b>Claimed von</b><p class="mt small"><code>${esc(t.claimedBy)}</code> (${fmt(t.claimAt)})</p></div>` : ''}
+      ${t.closeReason ? `<div class="card"><b>Schließgrund</b><p class="mt small">${esc(t.closeReason)}</p></div>` : ''}
+      ${t.closeRequest ? `<div class="card"><b>🔔 Schließanfrage</b><p class="mt small">${esc(t.closeRequest)}</p></div>` : ''}
+      ${fb ? `<div class="card"><b>Feedback</b><p class="mt small">${'⭐'.repeat(fb.stars)}${'☆'.repeat(5 - fb.stars)}${fb.comment ? `<br>${esc(fb.comment)}` : ''}</p></div>` : ''}
+      <div class="card"><b>Nachrichten</b><p class="mt small">${t.messageCount}</p></div>
+      ${t.firstResponseAt ? `<div class="card"><b>Erste Antwort</b><p class="mt small">${fmt(t.firstResponseAt)}</p></div>` : ''}
+      ${t.notes && t.notes.length ? `<div class="card"><b>📝 Notizen</b><p class="mt small">${t.notes.length} private Team-Notizen</p></div>` : ''}
     </div>
-    <h2 class="mt">Transkript</h2>
+    <h2>Transkript</h2>
     <div class="card mt"><pre>${esc(data.transcript || 'Kein Transkript vorhanden.')}</pre></div>`;
 
+  $('#bBack').addEventListener('click', () => renderNavView('tickets'));
   document.querySelectorAll('[data-act]').forEach((b) =>
     b.addEventListener('click', async () => {
       const act = b.dataset.act;
-      const reason = act === 'close' && !window.confirm('Ticket schließen?') ? null : '';
-      if (act === 'delete' && !window.confirm(`Ticket ${t.id} wirklich löschen?`)) return;
-      const payload = { action: act };
+      if (act === 'delete') {
+        const ok = await confirmModal(`Ticket ${t.id} löschen?`, 'Kanal wird unwiderruflich gelöscht. Das Transkript bleibt gespeichert.', 'Löschen', true);
+        if (!ok) return;
+      }
+      let reason;
       if (act === 'close') {
-        const r = prompt('Grund (optional):');
+        const r = await promptModal('Ticket schließen', 'Grund (optional):');
         if (r === null) return;
-        payload.reason = r;
+        reason = r;
       }
       try {
-        await fetchJSON(`/api/g/${g.guild.id}/tickets/${t.id}/action`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
+        await api(`/api/g/${g.guild.id}/tickets/${t.id}/action`, jsonBody({ action: act, reason }));
         toast(`✅ ${act} durchgeführt`);
         await refreshState();
-        showTicket(t.id);
-      } catch (e) {
-        toast(e.message);
-      }
+        if (act === 'delete') renderNavView('tickets'); else showTicket(t.id);
+      } catch (e) { toast(e.message); }
     })
   );
 }
-window.__back = () => {
-  state.view = 'tickets';
-  bindNav();
-  document.querySelectorAll('.nav button').forEach((x) => x.classList.remove('active'));
-  document.querySelector('[data-view="tickets"]')?.classList.add('active');
+
+function renderNavView(view) {
+  state.view = view;
+  renderNav();
   render();
-};
+}
+function promptModal(title, msg) {
+  return openModal(`
+    <h3>${esc(title)}</h3>
+    <p>${esc(msg)}</p>
+    <input id="promptVal" placeholder="…">
+    <div class="row mt" style="justify-content:flex-end">
+      <button class="btn ghost sm" data-no>Abbrechen</button>
+      <button class="btn sm green" data-yes>OK</button>
+    </div>`).then((ok) => ok ? ($('#promptVal').value || '').trim() : null);
+}
+
+// ---------------------------------------------------------------- panels
 
 function renderPanels() {
   const g = current();
   main().innerHTML = `
-    <div class="row" style="justify-content:space-between;flex-wrap:wrap">
-      <h1>Panels</h1><button class="btn sm ghost" id="newPanelBtn">+ Neues Panel</button>
+    <div class="row between wrap">
+      <div class="hero"><div class="icon">🧩</div><div class="t">
+        <h1>Panels</h1><p class="sub">Ticket-Eröffnungs-Panels mit bis zu 5 Kategorien.</p>
+      </div></div>
+      <button class="btn sm ghost" id="newPanelBtn">+ Neues Panel</button>
     </div>
     <div id="panelForm" class="card mt" style="display:none">
-      <label>Kanal-ID (wo das Panel erscheint)</label><input id="pChannel" placeholder="123456789012345678">
-      <label>Titel</label><input id="pTitle" placeholder="🎫 Ticket erstellen">
-      <label>Beschreibung</label><textarea id="pDesc" placeholder="Klicke unten…"></textarea>
+      <div class="grid g2">
+        <div><label>Kanal-ID (Panel erscheint dort)</label><input id="pChannel" placeholder="123456789012345678"></div>
+        <div><label>Titel</label><input id="pTitle" placeholder="🎫 Ticket erstellen"></div>
+      </div>
+      <label>Beschreibung</label><textarea id="pDesc" placeholder="Klicke unten, um ein Ticket zu erstellen."></textarea>
       <label>Farbe</label><input id="pColor" placeholder="#5865F2">
       <label>Kategorien (eine pro Zeile: Label = Kanal-ID)</label>
       <textarea id="pCats" placeholder="Support = 12345678&#10;Billing = 98765432"></textarea>
       <div class="row mt"><button class="btn green sm" id="pSave">Erstellen</button></div>
     </div>
-    <div class="grid mt" id="panelList"></div>`;
+    <div class="grid g2 mt" id="panelList"></div>`;
 
   $('#newPanelBtn').addEventListener('click', () => {
     $('#panelForm').style.display = $('#panelForm').style.display === 'none' ? 'block' : 'none';
@@ -295,42 +476,24 @@ function renderPanels() {
       return { label: (m[0] || m[1] || '').trim(), channelId: ((m[1] || m[0]) || '').trim() };
     }).filter((c) => c.channelId);
     try {
-      await fetchJSON(`/api/g/${g.guild.id}/panels/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channelId: $('#pChannel').value.trim(), title: $('#pTitle').value, description: $('#pDesc').value, color: $('#pColor').value, categories: cats }),
-      });
+      await api(`/api/g/${g.guild.id}/panels/create`, jsonBody({ channelId: $('#pChannel').value.trim(), title: $('#pTitle').value, description: $('#pDesc').value, color: $('#pColor').value, categories: cats }));
       toast('✅ Panel erstellt');
       await refreshState();
       renderPanels();
-    } catch (e) {
-      toast(e.message);
-    }
+    } catch (e) { toast(e.message); }
   });
-  loadPanels(g);
-}
-
-async function loadPanels(g) {
   const panels = g.panels;
   $('#panelList').innerHTML = panels.length
-    ? panels.map((p) => `
-      <div class="card">
-        <div class="row" style="justify-content:space-between">
-          <b>${esc(p.title)}</b>
-          <button class="btn red sm" data-pid="${esc(p.id)}">🗑️</button>
-        </div>
-        <p class="muted mt" style="font-size:13px">Kanal: <code>${esc(p.channelId)}</code></p>
-        <p class="muted" style="font-size:13px">${p.categories.length} Kategorie(n): ${p.categories.map((c) => esc(c.label)).join(', ')}</p>
+    ? panels.map((p) => `<div class="card">
+        <div class="row between"><b>${esc(p.title)}</b><button class="btn red sm" data-pid="${esc(p.id)}">🗑️</button></div>
+        <p class="muted small mt">Kanal: <code>${esc(p.channelId)}</code></p>
+        <p class="muted small">${p.categories.length} Kategorie(n): ${p.categories.map((c) => `${c.emoji} ${esc(c.label)}`).join(', ')}</p>
       </div>`).join('')
-    : '<p class="muted">Keine Panels. Erstelle ein Panel über <code>/panel create</code> in Discord oder oben.</p>';
+    : '<p class="muted">Keine Panels. Erstelle ein Panel via <code>/panel create</code> oder oben.</p>';
   document.querySelectorAll('[data-pid]').forEach((b) =>
     b.addEventListener('click', async () => {
-      if (!confirm('Panel löschen?')) return;
-      await fetchJSON(`/api/g/${g.guild.id}/panels/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ panelId: b.dataset.pid }),
-      });
+      if (!await confirmModal('Panel löschen?', 'Das Panel wird entfernt.', 'Löschen', true)) return;
+      await api(`/api/g/${g.guild.id}/panels/delete`, jsonBody({ panelId: b.dataset.pid }));
       toast('🗑️ Panel gelöscht');
       await refreshState();
       renderPanels();
@@ -338,24 +501,18 @@ async function loadPanels(g) {
   );
 }
 
+// ---------------------------------------------------------------- logs / settings
+
 function renderLogs() {
   const g = current();
   const logs = g.actions;
   main().innerHTML = `
-    <h1>Logs</h1>
+    <div class="hero"><div class="icon">📜</div><div class="t"><h1>Audit-Logs</h1><p class="sub">Alle Ticket-Aktionen im Überblick.</p></div></div>
     <div class="card mt"><table>
       <thead><tr><th>Zeit</th><th>Aktion</th><th>Ticket</th><th>Von</th><th>Details</th></tr></thead>
-      <tbody>
-        ${logs.length ? logs.map((a) => `
-          <tr>
-            <td>${fmt(a.at)}</td>
-            <td>${esc(a.type)}</td>
-            <td>${esc(a.ticketId || '–')}</td>
-            <td>${esc(a.actorName || a.actorId || '–')}</td>
-            <td class="muted">${esc((a.detail || '').slice(0, 60))}</td>
-          </tr>`).join('')
-        : '<tr><td colspan="5" class="muted">Noch keine Aktionen.</td></tr>'}
-      </tbody></table></div>`;
+      <tbody>${logs.length ? logs.map((a) => `
+        <tr><td>${fmt(a.at)}</td><td>${esc(a.type)}</td><td>${esc(a.ticketId || '–')}</td><td>${esc(a.actorName || a.actorId || '–')}</td><td class="muted">${esc((a.detail || '').slice(0, 70))}</td></tr>`).join('')
+        : '<tr><td colspan="5" class="muted">Noch keine Aktionen.</td></tr>'}</tbody></table></div>`;
 }
 
 function renderSettings() {
@@ -363,7 +520,7 @@ function renderSettings() {
   const c = g.config;
   const e = c.embed || {};
   main().innerHTML = `
-    <h1>Einstellungen</h1>
+    <div class="hero"><div class="icon">⚙️</div><div class="t"><h1>Einstellungen</h1><p class="sub">Grundkonfiguration des Ticket-Systems.</p></div></div>
     <div class="grid g2 mt">
       ${field('Sprache', 'language', c.language, 'text')}
       ${field('Support-Rollen (IDs, kommasepariert)', 'supportRoles', (c.supportRoles || []).join(','), 'text')}
@@ -379,10 +536,10 @@ function renderSettings() {
       ${field('Auto-Close nach (Minuten, 0=aus)', 'autoCloseMinutes', c.autoCloseMinutes, 'number')}
       ${field('Auto-Delete nach (Stunden, 0=aus)', 'autoDeleteHours', c.autoDeleteHours, 'number')}
       ${field('Message-Limit Transkript', 'messageLimit', c.messageLimit, 'number')}
-      ${field('Feedback aktiv', 'feedbackEnabled', c.feedbackEnabled, 'checkbox')}
-      ${field('Auto-Transkripte', 'autoTranscripts', c.autoTranscripts, 'checkbox')}
+      ${fieldSwitch('Feedback aktiv', 'feedbackEnabled', c.feedbackEnabled)}
+      ${fieldSwitch('Auto-Transkripte', 'autoTranscripts', c.autoTranscripts)}
     </div>
-    <h2 class="mt">Embed Anpassung</h2>
+    <h2>Embed-Anpassung</h2>
     <div class="grid g2 mt">
       ${field('Farbe', 'embedColor', e.color || '#5865F2', 'text')}
       ${field('Author', 'embedAuthor', e.author || '', 'text')}
@@ -397,53 +554,380 @@ function renderSettings() {
     const pick = (name) => document.querySelector(`[data-k="${name}"]`);
     const num = (n) => Math.max(0, parseInt(pick(n).value, 10) || 0);
     const list = (n) => pick(n).value.split(',').map((x) => x.trim()).filter(Boolean);
-    const bool = (n) => pick(n).checked;
     const body = {
       language: pick('language').value,
-      supportRoles: list('supportRoles'),
-      managerRoles: list('managerRoles'),
-      adminRoles: list('adminRoles'),
-      accessRoles: list('accessRoles'),
-      pingRoleId: pick('pingRoleId').value || null,
-      logChannelId: pick('logChannelId').value || null,
-      transcriptChannelId: pick('transcriptChannelId').value || null,
-      defaultCategoryId: pick('defaultCategoryId').value || null,
-      closedCategoryId: pick('closedCategoryId').value || null,
-      maxTicketsPerUser: num('maxTicketsPerUser'),
-      autoCloseMinutes: num('autoCloseMinutes'),
-      autoDeleteHours: num('autoDeleteHours'),
-      messageLimit: num('messageLimit'),
-      feedbackEnabled: bool('feedbackEnabled'),
-      autoTranscripts: bool('autoTranscripts'),
-      embed: {
-        color: pick('embedColor').value,
-        author: pick('embedAuthor').value,
-        footer: pick('embedFooter').value,
-        title: pick('embedTitle').value,
-        description: pick('embedDescription').value,
-        thumbnail: pick('embedThumbnail').value,
-      },
+      supportRoles: list('supportRoles'), managerRoles: list('managerRoles'), adminRoles: list('adminRoles'), accessRoles: list('accessRoles'),
+      pingRoleId: pick('pingRoleId').value || null, logChannelId: pick('logChannelId').value || null, transcriptChannelId: pick('transcriptChannelId').value || null,
+      defaultCategoryId: pick('defaultCategoryId').value || null, closedCategoryId: pick('closedCategoryId').value || null,
+      maxTicketsPerUser: num('maxTicketsPerUser'), autoCloseMinutes: num('autoCloseMinutes'), autoDeleteHours: num('autoDeleteHours'), messageLimit: num('messageLimit'),
+      feedbackEnabled: pick('feedbackEnabled').checked, autoTranscripts: pick('autoTranscripts').checked,
+      embed: { color: pick('embedColor').value, author: pick('embedAuthor').value, footer: pick('embedFooter').value, title: pick('embedTitle').value, description: pick('embedDescription').value, thumbnail: pick('embedThumbnail').value },
     };
     try {
-      await fetchJSON(`/api/g/${current().guild.id}/settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      await api(`/api/g/${current().guild.id}/settings`, jsonBody(body));
       toast('✅ Einstellungen gespeichert');
       await refreshState();
-    } catch (e) {
-      toast(e.message);
-    }
+    } catch (e) { toast(e.message); }
   });
 }
 
 function field(label, key, value, type) {
-  if (type === 'checkbox') {
-    return `<div class="card"><label>${label}</label>
-      <div class="row mt"><input type="checkbox" data-k="${key}" ${value ? 'checked' : ''}></div></div>`;
-  }
   return `<div class="card"><label>${label}</label><input class="mt" type="${type}" data-k="${key}" value="${esc(value)}"></div>`;
 }
+function fieldSwitch(label, key, value) {
+  return `<div class="card"><label>${label}</label>
+    <div class="row mt">
+      <label class="switch" style="margin:0">
+        <input type="checkbox" data-k="${key}" ${value ? 'checked' : ''}><span class="track"></span><span class="knob"></span>
+      </label>
+      <span class="muted small">${value ? 'aktiv' : 'inaktiv'}</span>
+    </div></div>`;
+}
+
+// ---------------------------------------------------------------- generic module renderer
+
+async function renderModule(name, builder) {
+  const gv = gid();
+  const d = await api(`/api/g/${gv}/module/${name}`);
+  builder(gv, d);
+}
+
+function selectHtml(id, options, value, placeholder = '— nicht gesetzt —', multiple = false) {
+  const opts = [`<option value="">${esc(placeholder)}</option>`, ...options.map((o) => `<option value="${esc(o.id)}" ${String(value || '') === String(o.id) ? 'selected' : ''}>${esc(o.name)}</option>`)];
+  return `<select id="${id}" ${multiple ? 'multiple' : ''}>${opts.join('')}</select>`;
+}
+function chans(meta) {
+  return (meta.channels || []).map((c) => ({ id: c.id, name: `#${c.name}` }));
+}
+function roles(meta) {
+  return (meta.roles || []).map((r) => ({ id: r.id, name: `@${r.name}` }));
+}
+async function saveModuleConfig(gv, name, body, extraMsg) {
+  try {
+    await api(`/api/g/${gv}/module/${name}`, jsonBody(body));
+    toast('✅ Gespeichert');
+    await refreshState();
+    renderModule(name, UI_BUILDERS[name]);
+    if (extraMsg) toast(extraMsg);
+  } catch (e) { toast(e.message); }
+}
+
+// ---------------------------------------------------------------- modules UI
+
+const UI_BUILDERS = {};
+
+function viewNews(gv, d) {
+  const c = d.config;
+  main().innerHTML = `
+    <div class="row between wrap">
+      <div class="hero"><div class="icon">📰</div><div class="t"><h1>News</h1><p class="sub">Kanal, Benachrichtigungsrolle und Erstellen von News-Embeds.</p></div></div>
+      <label class="switch" style="margin:0"><input type="checkbox" id="newsEnabled" ${c.enabled ? 'checked' : ''}><span class="track"></span><span class="knob"></span></label>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><label>News-Kanal</label>${selectHtml('newsChannel', chans(d.meta), c.channelId)}</div>
+      <div class="card"><label>Benachrichtigungs-Rolle (/news subscribe)</label>${selectHtml('newsRole', roles(d.meta), c.roleId)}</div>
+    </div>
+    <h2>Neue News veröffentlichen</h2>
+    <div class="card mt">
+      <div class="grid g2">
+        <div><label>Titel</label><input id="nTitle" placeholder="🎉 Update angekündigt"></div>
+        <div><label>Großes Bild (URL, optional)</label><input id="nImage" placeholder="https://…"></div>
+      </div>
+      <label>Nachricht</label><textarea id="nMessage" placeholder="Schreibe hier die News…"></textarea>
+      <div class="row mt"><button class="btn green sm" id="nPost">📤 Veröffentlichen</button></div>
+    </div>
+    <div class="row mt"><button class="btn ghost sm" id="nSave">💾 Kanal/Rolle speichern</button></div>`;
+  $('#nSave').addEventListener('click', () => saveModuleConfig(gv, 'news', { channelId: $('#newsChannel').value || null, roleId: $('#newsRole').value || null, enabled: $('#newsEnabled').checked }));
+  $('#nPost').addEventListener('click', async () => {
+    try {
+      await api(`/api/g/${gv}/news/post`, jsonBody({ title: $('#nTitle').value, message: $('#nMessage').value, image: $('#nImage').value }));
+      toast('📰 News veröffentlicht');
+      $('#nMessage').value = '';
+    } catch (e) { toast(e.message); }
+  });
+}
+
+function viewSuggestions(gv, d) {
+  const c = d.config;
+  const sugs = d.suggestions || [];
+  const open = sugs.filter((s) => s.status === 'pending');
+  const done = sugs.filter((s) => s.status !== 'pending');
+  main().innerHTML = `
+    <div class="row between wrap">
+      <div class="hero"><div class="icon">💡</div><div class="t"><h1>Vorschläge</h1><p class="sub">Kategorien, Abstimmung, Annahme &amp; Ablehnung von Vorschlägen.</p></div></div>
+      ${c.requireApproval ? `<span class="badge pending">🔎 Prüfung aktiv</span>` : ''}
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Vorschlags-Kanal</label>${selectHtml('sgChannel', chans(d.meta), c.channelId)}</div>
+      <div class="card"><label>Prüf-Kanal (optional)</label>${selectHtml('sgReview', chans(d.meta), c.reviewChannelId)}</div>
+      <div class="card"><label>Team-Rolle (darf annehmen/ablehnen)</label>${selectHtml('sgTeam', roles(d.meta), (c.teamRoles || [])[0])}</div>
+      <div class="card"><label>Kategorien (eine pro Zeile: Name = Emoji)</label><textarea id="sgCats">${esc((c.categories || []).map((x) => `${x.name} = ${x.emoji || '💡'}`).join('\n'))}</textarea></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card">${fieldSwitchNoL('Erst prüfen', 'sgApproval', c.requireApproval, 'Neue Vorschläge müssen zuerst geprüft werden')}</div>
+      <div class="card">${fieldSwitchNoL('DM bei Entscheidung', 'sgDm', c.dmOnDecide, 'Benachrichtige den Autor per DM')}</div>
+    </div>
+    <h2>Offene Vorschläge (${open.length})</h2>
+    <div class="card mt">${open.length ? open.map(sgRow).join('') : '<p class="muted">Keine offenen Vorschläge.</p>'}</div>
+    ${done.length ? `<h2>Entschieden (${done.length})</h2><div class="card mt">${done.slice(0, 15).map(sgRowClosed).join('')}</div>` : ''}
+    <div class="row mt"><button class="btn ghost sm" id="sgSave">💾 Konfiguration speichern</button></div>`;
+  $('#sgSave').addEventListener('click', () => {
+    const cats = $('#sgCats').value.split('\n').map((l) => l.trim().split(/\s*=\s*/)).filter((x) => x && x[0]).map(([name, emoji]) => ({ name, emoji: emoji || '💡', description: '', active: true }));
+    saveModuleConfig(gv, 'suggestions', { channelId: $('#sgChannel').value || null, reviewChannelId: $('#sgReview').value || null, teamRoles: $('#sgTeam').value ? [$('#sgTeam').value] : [], categories: cats, requireApproval: $('#sgApprovalCheck').checked, dmOnDecide: $('#sgDmCheck').checked });
+  });
+  document.querySelectorAll('[data-sdec]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const sid = b.dataset.sid;
+      const decision = b.dataset.sdec;
+      let reason;
+      if (decision === 'decline') {
+        const r = await promptModal('Vorschlag ablehnen', 'Ablehnungsgrund (optional):');
+        if (r === null) return;
+        reason = r;
+      }
+      try {
+        await api(`/api/g/${gv}/suggestions/${sid}/decide`, jsonBody({ decision, reason }));
+        toast('✅ Entscheidung gespeichert');
+        renderModule('suggestions', UI_BUILDERS.suggestions);
+      } catch (e) { toast(e.message); }
+    })
+  );
+}
+
+function sgRow(s) {
+  return `<div class="card" style="margin-bottom:10px;padding:14px">
+    <div class="row between wrap">
+      <div><b>${esc(s.categoryEmoji)} ${esc(s.category)} #${s.seq}</b> <span class="badge pending">${esc(s.status)}</span>
+        <p class="small muted mt">${esc(s.idea)}</p>
+        <p class="small muted">von ${esc(s.authorTag)} · ${s.up} 👍 / ${s.down} 👎</p>
+      </div>
+      <div class="row"><button class="btn green sm" data-sdec="accept" data-sid="${esc(s.id)}">✅ Annehmen</button><button class="btn red sm" data-sdec="decline" data-sid="${esc(s.id)}">❌ Ablehnen</button></div>
+    </div></div>`;
+}
+function sgRowClosed(s) {
+  return `<div class="card" style="margin-bottom:10px;padding:12px">
+    <div class="row between wrap"><div>
+      <span class="badge ${s.status}">${s.status === 'accepted' ? '✅ angenommen' : '❌ abgelehnt'}</span> <b>#${s.seq} ${esc(s.category)}</b> ${s.up}👍/${s.down}👎
+      <p class="small muted mt">${esc(s.idea)}</p>
+    </div><button class="btn ghost sm" data-sdec="reset" data-sid="${esc(s.id)}">🔄 Stimmen zurücksetzen</button></div></div>`;
+}
+
+function fieldSwitchNoL(label, id, value, hint) {
+  return `<b class="small">${label}</b><p class="muted small">${hint}</p>
+    <div class="row mt"><label class="switch" style="margin:0"><input type="checkbox" id="${id}Check" ${value ? 'checked' : ''}><span class="track"></span><span class="knob"></span></label></div>`;
+}
+
+function viewModeration(gv, d) {
+  const c = d.config;
+  const cases = d.cases || [];
+  main().innerHTML = `
+    <div class="row between wrap">
+      <div class="hero"><div class="icon">🛡️</div><div class="t"><h1>Moderation</h1><p class="sub">Modlog-Kanal, Warnlimit und automatische Aktionen.</p></div></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Modlog-Kanal</label>${selectHtml('mwLog', chans(d.meta), c.modlogChannelId)}</div>
+      <div class="card"><label>Moderator-Rolle (optional)</label>${selectHtml('mwRoles', roles(d.meta), (c.modRoles || [])[0])}</div>
+      <div class="card"><label>Warnlimit (0 = aus)</label><input id="mwLimit" type="number" min="0" value="${c.warnLimit || 0}"></div>
+      <div class="card"><label>Aktion bei Warnlimit</label><select id="mwAction"><option value="mute" ${c.warnAction === 'mute' ? 'selected' : ''}>Auto-Mute</option><option value="kick" ${c.warnAction === 'kick' ? 'selected' : ''}>Auto-Kick</option><option value="ban" ${c.warnAction === 'ban' ? 'selected' : ''}>Auto-Ban</option></select></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card">${fieldSwitchNoL('DM bei Aktionen', 'mwDm', c.dmOnAction, 'Benutzer per DM über Mod-Aktionen informieren')}</div>
+      <div class="card"><label>Ignorierte Rollen (IDs, kommasepariert)</label><input id="mwIgnore" value="${esc((c.ignoreRoles || []).join(','))}"></div>
+    </div>
+    <div class="row mt"><button class="btn ghost sm" id="mwSave">💾 Speichern</button></div>
+    <h2>Moderationsfälle (${cases.length})</h2>
+    <div class="card mt"><table>
+      <thead><tr><th>Case</th><th>Systemdaten</th><th>Grund</th><th>Zeit</th></tr></thead>
+      <tbody>${cases.slice(0, 50).map((c2) => `<tr>
+        <td><b>${esc(c2.id)}</b> ${esc(c2.type)}</td>
+        <td>${c2.userTag ? esc(c2.userTag) : esc(c2.userId || '–')}</td>
+        <td class="muted">${esc((c2.reason || '').slice(0, 60))}</td>
+        <td>${fmt(c2.at)}</td>
+      </tr>`).join('') || '<tr><td colspan="4" class="muted">Noch keine Fälle.</td></tr>'}</tbody></table></div>`;
+  $('#mwSave').addEventListener('click', () => saveModuleConfig(gv, 'moderation', {
+    modlogChannelId: $('#mwLog').value || null,
+    modRoles: $('#mwRoles').value ? [$('#mwRoles').value] : [],
+    warnLimit: Math.max(0, parseInt($('#mwLimit').value, 10) || 0),
+    warnAction: $('#mwAction').value,
+    dmOnAction: $('#mwDmCheck').checked,
+    ignoreRoles: $('#mwIgnore').value.split(',').map((x) => x.trim()).filter(Boolean),
+  }));
+}
+
+async function viewWelcome(gv, d) {
+  d = d || {};
+  const w = d.config;
+  let f = { channelId: null, message: '{user} hat den Server verlassen. 👋' };
+  try {
+    const fd = await api(`/api/g/${gv}/module/farewell`);
+    f = fd.config || f;
+  } catch { /* ignore */ }
+  main().innerHTML = `
+    <div class="row between wrap">
+      <div class="hero"><div class="icon">👋</div><div class="t"><h1>Welcome &amp; Leave</h1><p class="sub">Begrüßung neuer Mitglieder, Auto-Rollen und Abschiedsnachrichten.</p></div></div>
+      <label class="switch" style="margin:0"><input type="checkbox" id="wEnabled" ${w.enabled ? 'checked' : ''}><span class="track"></span><span class="knob"></span></label>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Willkommens-Kanal</label>${selectHtml('wChannel', chans(d.meta), w.channelId)}</div>
+      <div class="card"><label>Abschieds-Kanal</label>${selectHtml('fChannel', chans(d.meta), f.channelId)}</div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Willkommens-Nachricht (Platzhalter {user} {tag} {name})</label><textarea id="wMsg">${esc(w.message || '')}</textarea></div>
+      <div class="card"><label>Abschieds-Nachricht</label><textarea id="fMsg">${esc(f.message || '{user} hat den Server verlassen. 👋')}</textarea></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Auto-Rollen (eine ID pro Zeile)</label><textarea id="wRoles">${esc((w.autoRoles || []).join('\n'))}</textarea></div>
+      <div class="card">${fieldSwitchNoL('Willkommens-DM', 'wDm', w.dmEnabled, 'Neue Mitglieder erhalten eine private Begrüßung')
+        }<div class="mt"><label>DM-Text</label><textarea id="wDmMsg">${esc(w.dmMessage || '')}</textarea></div></div>
+    </div>
+    <div class="row mt"><button class="btn ghost sm" id="wSave">💾 Speichern</button></div>`;
+  $('#wSave').addEventListener('click', () => {
+    saveModuleConfig(gv, 'welcome', {
+      enabled: $('#wEnabled').checked, channelId: $('#wChannel').value || null, message: $('#wMsg').value,
+      autoRoles: $('#wRoles').value.split('\n').map((x) => x.trim()).filter(Boolean),
+      dmEnabled: $('#wDmCheck').checked, dmMessage: $('#wDmMsg').value,
+    });
+    saveModuleConfig(gv, 'farewell', { channelId: $('#fChannel').value || null, message: $('#fMsg').value });
+    toast('✅ Willkommen/Abschied gespeichert');
+  });
+}
+
+function viewStats(gv, d) {
+  const c = d.config;
+  main().innerHTML = `
+    <div class="hero"><div class="icon">📈</div><div class="t"><h1>Server Stats</h1><p class="sub">Automatische Statistik-Voice-Kanäle (Mitglieder, Online, Boosts, Voice).</p></div></div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Präfix für Kanalnamen</label><input id="sPrefix" value="${esc(c.prefix || '📊')}"></div>
+      <div class="card"><label>Aktive Statistik-Kanäle</label><p class="mt small muted">${(d.channels || []).map((x) => esc(x.kind)).join(', ') || '— noch keine —'}</p></div>
+    </div>
+    <div class="card mt">
+      <label>Statistik-Kanäle erstellen (können gelöscht werden)</label>
+      <div class="row wrap">
+        ${['👥', '🟢', '⚡', '🎧'].map((k) => `<label class="switch" style="margin:0 14px 0 0"><input type="checkbox" class="sKind" value="${k}" ${k === '👥' ? 'checked' : ''}><span class="track"></span><span class="knob"></span><span style="margin-left:34px;font-weight:600">${k === '👥' ? 'Mitglieder' : k === '🟢' ? 'Online' : k === '⚡' ? 'Boosts' : 'Im Voice'}</span></label>`).join('')}
+      </div>
+      <div class="row mt"><button class="btn green sm" id="sSetup">⚙️ Statistik-Kanäle einrichten</button></div>
+    </div>`;
+  $('#sSetup').addEventListener('click', async () => {
+    const kinds = [...document.querySelectorAll('.sKind:checked')].map((x) => x.value);
+    try {
+      const r = await api(`/api/g/${gv}/stats/setup`, jsonBody({ kinds, prefix: $('#sPrefix').value || '📊' }));
+      toast(`✅ ${r.created.length} Statistik-Kanäle erstellt`);
+      renderModule('stats', UI_BUILDERS.stats);
+    } catch (e) { toast(e.message); }
+  });
+}
+
+function viewSupport(gv, d) {
+  const c = d.config;
+  main().innerHTML = `
+    <div class="hero"><div class="icon">🎧</div><div class="t"><h1>Support / Voice</h1><p class="sub">Temporäre Support-Voice-Kanäle und Öffnungszeiten.</p></div></div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Kategorie für temporäre Voice-Kanäle</label>${selectHtml('svCat', chans(d.meta).filter((x) => x.id && x.id !== ''), c.voiceCategoryId)}</div>
+      <div class="card"><label>Team-Rolle (Support)</label>${selectHtml('svTeam', roles(d.meta), c.teamRoleId)}</div>
+      <div class="card"><label>Benachrichtigungs-Kanal</label>${selectHtml('svNotify', chans(d.meta), c.notifyChannelId)}</div>
+      <div class="card"><label>Kanalname-Vorlage</label><input id="svName" value="${esc(c.tempChannelName || '🎧 Support-{n}')}"></div>
+    </div>
+    <h2>Öffnungszeiten</h2>
+    <div class="card mt">
+      <div class="grid g2">
+        <div><label>Tag</label><select id="svDay">${['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'].map((x) => `<option>${x}</option>`).join('')}</select></div>
+        <div class="row"><div style="flex:1"><label>Von</label><input id="svStart" type="time" value="18:00"></div><div style="flex:1"><label>Bis</label><input id="svEnd" type="time" value="22:00"></div></div>
+      </div>
+      <div class="row mt"><button class="btn sm ghost" id="svAddTime">+ Zeitfenster</button><button class="btn sm red ghost" id="svClearTimes">Zeiten löschen</button></div>
+      <div class="mt" id="svTimes"></div>
+    </div>
+    <div class="row mt"><button class="btn ghost sm" id="svSave">💾 Speichern</button></div>`;
+  $('#svTimes').innerHTML = (c.times || []).length
+    ? `<table><thead><tr><th>Tag</th><th>Von</th><th>Bis</th></tr></thead><tbody>${c.times.map((t) => `<tr><td>${esc(t.day)}</td><td>${esc(t.start)}</td><td>${esc(t.end)}</td></tr>`).join('')}</tbody></table>`
+    : '<p class="muted">Noch keine Öffnungszeiten.</p>';
+  $('#svAddTime').addEventListener('click', () => {
+    const times = [...(c.times || []), { day: $('#svDay').value, start: $('#svStart').value || '00:00', end: $('#svEnd').value || '00:00' }];
+    saveModuleConfig(gv, 'support', { times });
+  });
+  $('#svClearTimes').addEventListener('click', () => saveModuleConfig(gv, 'support', { times: [] }));
+  $('#svSave').addEventListener('click', () => saveModuleConfig(gv, 'support', {
+    enabled: true, voiceCategoryId: $('#svCat').value || null, teamRoleId: $('#svTeam').value || null,
+    notifyChannelId: $('#svNotify').value || null, tempChannelName: $('#svName').value || '🎧 Support-{n}',
+  }));
+}
+
+function viewProtection(gv, d) {
+  const c = d.config;
+  main().innerHTML = `
+    <div class="hero"><div class="icon">🔐</div><div class="t"><h1>Guild Protection</h1><p class="sub">Captcha-Verifizierung für neue Mitglieder (DM + Rolle).</p></div></div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Verifizierungs-Rolle</label>${selectHtml('pvRole', roles(d.meta), c.verifiedRoleId)}</div>
+      <div class="card"><label>Fallback-Kanal (falls DM blockiert)</label>${selectHtml('pvChannel', chans(d.meta), c.verifyChannelId)}</div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card">${fieldSwitchNoL('Captcha-Verifizierung', 'pvOn', c.enabled, 'Neue Mitglieder müssen einen Code aus ihrer DM bestätigen')}</div>
+      <div class="card"><p class="small muted"><b>So funktioniert es:</b> Beim Beitritt erhält der User eine DM mit 6-stelligem Code und Button. Nach Bestätigung bekommt er die Verifizierungs-Rolle. Falls DMs blockiert sind, erscheint der Code im Fallback-Kanal und der User nutzt <code>/verify</code>.</p></div>
+    </div>
+    <div class="row mt"><button class="btn ghost sm" id="pvSave">💾 Speichern</button></div>`;
+  $('#pvSave').addEventListener('click', () => saveModuleConfig(gv, 'protection', {
+    enabled: $('#pvOnCheck').checked, verifiedRoleId: $('#pvRole').value || null, verifyChannelId: $('#pvChannel').value || null,
+  }));
+}
+
+function viewActivity(gv, d) {
+  const c = d.config;
+  const counts = d.counts || {};
+  main().innerHTML = `
+    <div class="hero"><div class="icon">🏅</div><div class="t"><h1>Activity Rewards</h1><p class="sub">Automatische Rollen für Aktivität (Nachrichten-Meilensteine).</p></div></div>
+    <div class="grid g2 mt">
+      <div class="card">${fieldSwitchNoL('Aktivitätsbelohnungen', 'aOn', c.enabled, 'Roll-Belohnungen aktivieren')}</div>
+      <div class="card"><label>Belohnungen (eine pro Zeile: Nachrichten = Rollen-ID)</label><textarea id="aRewards">${esc((c.rewards || []).map((r) => `${r.messages} = ${r.roleId}`).join('\n'))}</textarea></div>
+    </div>
+    <div class="row mt"><button class="btn ghost sm" id="aSave">💾 Speichern</button></div>
+    <h2>Gemessene Aktivität (Top 20)</h2>
+    <div class="card mt"><table><thead><tr><th>User-ID</th><th>Nachrichten</th></tr></thead>
+      <tbody>${Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([u, n]) => `<tr><td><code>${esc(u)}</code></td><td>${n}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">Noch keine Daten.</td></tr>'}</tbody></table></div>`;
+  $('#aSave').addEventListener('click', () => {
+    const rewards = $('#aRewards').value.split('\n').map((l) => l.trim().split(/\s*=\s*/)).filter((x) => x && x[1]).map(([messages, roleId]) => ({ messages: Math.max(1, parseInt(messages, 10) || 1), roleId: (roleId.match(/\d{15,20}/) || [roleId])[0] }));
+    saveModuleConfig(gv, 'activity', { enabled: $('#aOnCheck').checked, rewards });
+  });
+}
+
+function viewSocial(gv, d) {
+  const c = d.config;
+  main().innerHTML = `
+    <div class="hero"><div class="icon">📱</div><div class="t"><h1>Social Media</h1><p class="sub">Automatische Benachrichtigungen für Twitch &amp; YouTube.</p></div></div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Standard-Benachrichtigungs-Kanal</label>${selectHtml('sxChan', chans(d.meta), c.notifyChannelId)}</div>
+      <div class="card"><p class="small muted"><b>Twitch:</b> benötigt <code>TWITCH_CLIENT_ID</code> &amp; <code>TWITCH_CLIENT_SECRET</code> in der Umgebung (Render → Environment).<br><b>YouTube:</b> funktioniert ohne Key per RSS-Feed.</p></div>
+    </div>
+    <h2>YouTube-Kanäle</h2>
+    <div class="card mt"><label>Eine pro Zeile: <code>Kanal-ID = Name [= Rolle] [= #Kanal-ID]</code></label>
+      <textarea id="sxYt">${esc((c.youtube || []).map((x) => `${x.channelId} = ${x.name || ''} = ${x.roleId || ''} = ${x.notifyChannelId || ''}`).join('\n'))}</textarea></div>
+    <h2>Twitch-Kanäle</h2>
+    <div class="card mt"><label>Eine pro Zeile: <code>Benutzername = Anzeigename [= Rolle] [= #Kanal-ID]</code></label>
+      <textarea id="sxTw">${esc((c.twitch || []).map((x) => `${x.name} = ${x.displayName || x.name} = ${x.roleId || ''} = ${x.notifyChannelId || ''}`).join('\n'))}</textarea></div>
+    <div class="row mt"><button class="btn ghost sm" id="sxSave">💾 Speichern</button></div>`;
+  $('#sxSave').addEventListener('click', () => {
+    const parseYt = (l) => {
+      const p = l.split('=').map((x) => x.trim());
+      return { channelId: p[0], name: p[1] || p[0], roleId: p[2] || null, notifyChannelId: p[3] || null };
+    };
+    const parseTw = (l) => {
+      const p = l.split('=').map((x) => x.trim());
+      return { name: p[0], displayName: p[1] || p[0], roleId: p[2] || null, notifyChannelId: p[3] || null };
+    };
+    saveModuleConfig(gv, 'social', {
+      notifyChannelId: $('#sxChan').value || null,
+      youtube: $('#sxYt').value.split('\n').map(parseYt).filter((x) => x.channelId),
+      twitch: $('#sxTw').value.split('\n').map(parseTw).filter((x) => x.name),
+    });
+  });
+}
+
+UI_BUILDERS.suggestions = viewSuggestions;
+UI_BUILDERS.news = viewNews;
+UI_BUILDERS.moderation = viewModeration;
+UI_BUILDERS.welcome = viewWelcome;
+UI_BUILDERS.stats = viewStats;
+UI_BUILDERS.support = viewSupport;
+UI_BUILDERS.protection = viewProtection;
+UI_BUILDERS.activity = viewActivity;
+UI_BUILDERS.social = viewSocial;
 
 init();
