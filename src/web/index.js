@@ -227,20 +227,21 @@ app.post('/api/g/:gid/settings', requireAuth, requireGuild, (req, res) => {
 app.get('/api/g/:gid/module/:name', requireAuth, requireGuild, (req, res) => {
   const cfg = store.ensureConfig(req.params.gid);
   const name = String(req.params.name).replace(/[^a-z]/gi, '');
-  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'privatevoice', 'protection', 'activity', 'social'];
+  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'privatevoice', 'protection', 'activity', 'levels', 'social'];
   if (!supported.includes(name)) return res.status(400).json({ error: 'unknown_module' });
   const extra = {};
   if (name === 'activity') extra.counts = cfg.activityCounts || {};
   if (name === 'moderation') extra.cases = store.getCases(req.params.gid);
   if (name === 'suggestions') extra.suggestions = store.getSuggestions(req.params.gid);
   if (name === 'stats') extra.channels = (cfg.stats?.channels || []).filter((c) => client && client.guilds.cache.get(req.params.gid)?.channels.cache.has(c.id));
+  if (name === 'levels') extra.leaderboard = store.leaderboard(req.params.gid, 10);
   res.json({ module: name, config: cfg[name] || {}, meta: moduleMeta(req.params.gid, name), ...extra });
 });
 
 app.post('/api/g/:gid/module/:name', requireAuth, requireGuild, (req, res) => {
   const cfg = store.ensureConfig(req.params.gid);
   const name = String(req.params.name).replace(/[^a-z]/gi, '');
-  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'privatevoice', 'protection', 'activity'];
+  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'privatevoice', 'protection', 'activity', 'levels'];
   if (!supported.includes(name)) return res.status(400).json({ error: 'unknown_module' });
   if (name === 'social') return res.status(400).json({ error: 'social_immutable_via_generic' });
   const prev = cfg[name] || {};
@@ -300,6 +301,8 @@ function moduleMeta(gid, name) {
       return { channels: chan(() => true), roles: roles() };
     case 'activity':
       return { channels: chan(() => true), roles: roles() };
+    case 'levels':
+      return { channels: chan((c) => c.isTextBased && c.isTextBased()), textChannels: chan((c) => c.isTextBased && c.isTextBased()), roles: roles() };
     default:
       return { channels: [], roles: roles() };
   }

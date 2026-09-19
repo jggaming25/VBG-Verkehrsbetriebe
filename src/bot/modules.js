@@ -1,8 +1,9 @@
 import { Events, ActivityType, ChannelType, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } from 'discord.js';
-import { store } from '../store.js';
+import { store, levelOf, xpForLevel, xpIntoLevel, xpToNext } from '../store.js';
 
 const verifyCodes = new Map(); // guildId:userId -> {code, at}
 const statsTimerByGuild = new Map();
+const voiceSessions = new Map(); // guild:user -> { channelId, since }
 
 // ---------------------------------------------------------------- welcome / farewell
 
@@ -201,22 +202,80 @@ const msgCounts = new Map(); // guild:user -> count
 async function onMessage(msg) {
   if (!msg.guild || msg.author.bot) return;
   const cfg = store.getConfig(msg.guild.id);
-  if (!cfg || !cfg.activity?.enabled) return;
+  if (!cfg) return;
   if ((cfg.optOuts || []).includes(msg.author.id)) return;
-  const key = `${msg.guild.id}:${msg.author.id}`;
-  const count = (msgCounts.get(key) || 0) + 1;
-  msgCounts.set(key, count);
-  if (count % 25 !== 0) return;
-  const member = msg.member;
-  if (!member) return;
-  for (const rw of cfg.activity.rewards || []) {
-    if (count >= rw.messages && !member.roles.cache.has(rw.roleId)) {
+
+  // ---- Activity Rewards (Nachrichten-Meilensteine) ----
+  if (cfg.activity?.enabled) {
+    const key = `${msg.guild.id}:${msg.author.id}`;
+    const count = (msgCounts.get(key) || 0) + 1;
+    msgCounts.set(key, count);
+    if (count % 25 === 0) {
+      const member = msg.member;
+      if (member) {
+        for (const rw of cfg.activity.rewards || []) {
+          if (count >= rw.messages && !member.roles.cache.has(rw.roleId)) {
+            try {
+              await member.roles.add(rw.roleId, `Aktivitätsbelohnung (${rw.messages} Nachrichten)`);
+              if (rw.mention) await msg.channel.send({ content: `🏅 <@${member.id}> hat **${rw.messages} Nachrichten** erreicht und **<@&${rw.roleId}>** erhalten!`, allowedMentions: { roles: [], users: [] } }).catch(() => {});
+            } catch { /* ignore */ }
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Voice- & Text-Level-System: Text-XP ----
+  if (cfg.levels?.enabled && msg.member) {
+    await grantTextXp(msg, cfg);
+  }
+}
+
+async function grantTextXp(msg, cfg) {
+  const rec = store.getLevelData(msg.guild.id, msg.author.id);
+  const cooldown = Math.max(1, Number(cfg.levels.cooldownSeconds) || 30) * 1000;
+  if (rec.lastMessageAt && Date.now() - rec.lastMessageAt < cooldown) return;
+  const xp = Math.max(1, Number(cfg.levels.textXp) || 1);
+  const res = store.addLevelXp(msg.guild.id, msg.author.id, xp, { lastMessageAt: Date.now() });
+  await grantLevelUpIfNeeded(msg.guild, msg.member, cfg, res);
+}
+
+async function grantVoiceXp(guild, member, cfg, sess) {
+  if (!member || member.user?.bot) return;
+  const minutes = Math.floor((Date.now() - sess.since) / 60000);
+  if (minutes <= 0) return;
+  const perMin = Math.round((Math.max(1, Number(cfg.levels.voiceXp) || 50)) / 60 * 10) / 10;
+  const xp = Math.round(perMin * minutes);
+  const rec = store.getLevelData(guild.id, member.id);
+  rec.voiceSeconds = (rec.voiceSeconds || 0) + minutes * 60;
+  const res = store.setLevelXp(guild.id, member.id, (rec.xp || 0) + xp);
+  await grantLevelUpIfNeeded(guild, member, cfg, res);
+}
+
+async function grantLevelUpIfNeeded(guild, member, cfg, res) {
+  if (res.levelAfter <= res.levelBefore) return;
+  const level = res.levelAfter;
+  let rewardLine = '';
+  for (const rw of cfg.levels.rewards || []) {
+    if (Number(rw.level) === level && rw.roleId && !member.roles.cache.has(rw.roleId)) {
       try {
-        await member.roles.add(rw.roleId, `Aktivitätsbelohnung (${rw.messages} Nachrichten)`);
-        if (rw.mention) await msg.channel.send({ content: `🏅 <@${member.id}> hat **${rw.messages} Nachrichten** erreicht und **<@&${rw.roleId}>** erhalten!`, allowedMentions: { roles: [], users: [] } }).catch(() => {});
+        await member.roles.add(rw.roleId, `Level ${level} erreicht`);
+        rewardLine += `<@&${rw.roleId}> `;
       } catch { /* ignore */ }
     }
   }
+  if (!cfg.levels.announceChannelId) return;
+  const ch = guild.channels.cache.get(cfg.levels.announceChannelId);
+  if (!ch || !ch.isTextBased()) return;
+  await ch.send({
+    embeds: [new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setAuthor({ name: `${member.displayName} ist jetzt Level ${level}`, iconURL: member.user.displayAvatarURL?.() })
+      .setDescription(`🎉 <@${member.id}> hat **Level ${level}** erreicht!${rewardLine ? `\nBelohnung: ${rewardLine.trim()}` : ''}`)
+      .setFooter({ text: `Rang #${store.rankOf(guild.id, member.id) || '–'}` })
+      .setTimestamp()],
+    allowedMentions: { roles: [], users: [] },
+  }).catch(() => {});
 }
 
 function flushCounts() {
@@ -267,6 +326,18 @@ async function onVoiceStateUpdate(oldS, newS) {
   const joinedLobby = newS.channelId && newS.channelId === pv?.lobbyChannelId;
   const leftLobby = oldS.channelId && oldS.channelId === pv?.lobbyChannelId;
   const st = cfg.support;
+
+  // ---- Voice- & Text-Level-System: Voice-XP ----
+  const lvKey = `${guild.id}:${member.id}`;
+  if (cfg.levels?.enabled) {
+    if (newS.channelId && !voiceSessions.has(lvKey)) {
+      voiceSessions.set(lvKey, { channelId: newS.channelId, since: Date.now() });
+    } else if (!newS.channelId && voiceSessions.has(lvKey)) {
+      const sess = voiceSessions.get(lvKey);
+      voiceSessions.delete(lvKey);
+      await grantVoiceXp(guild, member, cfg, sess);
+    }
+  }
 
   // ---- Wartemusik-lose Support-Benachrichtigung: Neuer User im Warteraum ----
   if (st?.enabled && newS.channelId) {
@@ -387,4 +458,4 @@ async function refreshAllStats(client) {
   }
 }
 
-export function clearTempTracking() { privateChannels.clear(); }
+export function clearTempTracking() { privateChannels.clear(); voiceSessions.clear(); }

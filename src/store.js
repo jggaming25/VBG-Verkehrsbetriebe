@@ -102,6 +102,16 @@ export function defaultConfig(guildId) {
       notifyChannelId: null,
       lastCheck: 0,
     },
+    levels: {
+      enabled: false,
+      textXp: 1,                // XP pro Nachricht (1 Nachricht = Level-Basis)
+      voiceXp: 50,              // XP pro Stunde im Sprachkanal (gerechnet pro Minute, gespeichert als Wert pro 60 Min)
+      cooldownSeconds: 30,      // Cooldown zwischen Nachrichten-XP pro User
+      announceChannelId: null,  // Kanal für Level-Up-Nachrichten (null = keine)
+      rewards: [],              // [{level, roleId}] – Rolle, die beim Erreichen des Levels vergeben wird
+      ratingEnabled: false,
+      ratingChannelId: null,
+    },
   };
 }
 
@@ -116,6 +126,7 @@ export class Store {
       suggestions: [],
       system: { ownerId: null },
       meta: { ticketSeq: {}, caseSeq: {}, suggestionSeq: {} },
+      levels: {},             // guildId -> userId -> { xp, lastMessageAt }
     };
   }
 
@@ -288,6 +299,47 @@ export class Store {
     return s;
   }
 
+  // ---------- levels (XP / Voice & Text Level-System) ----------
+  getLevelData(guildId, userId) {
+    const all = this.db.levels[guildId] || (this.db.levels[guildId] = {});
+    return all[userId] || (all[userId] = { xp: 0, lastMessageAt: 0, voiceSeconds: 0 });
+  }
+  addLevelXp(guildId, userId, amount, patch = {}) {
+    const rec = this.getLevelData(guildId, userId);
+    const before = rec.xp;
+    rec.xp = Math.max(0, (rec.xp || 0) + Math.round(amount));
+    Object.assign(rec, patch);
+    this.save();
+    return { rec, levelBefore: levelOf(before), levelAfter: levelOf(rec.xp) };
+  }
+  setLevelXp(guildId, userId, xp) {
+    return this.addLevelXp(guildId, userId, xp - (this.getLevelData(guildId, userId).xp || 0));
+  }
+  allLevelData(guildId) {
+    return this.db.levels[guildId] || {};
+  }
+  resetLevel(guildId, userId) {
+    delete this.db.levels[guildId]?.[userId];
+    this.save();
+  }
+  resetLevels(guildId) {
+    this.db.levels[guildId] = {};
+    this.save();
+  }
+  rankOf(guildId, userId) {
+    const sorted = Object.entries(this.allLevelData(guildId)).sort((a, b) => (b[1].xp || 0) - (a[1].xp || 0));
+    const idx = sorted.findIndex(([uid]) => uid === userId);
+    return idx < 0 ? null : idx + 1;
+  }
+  leaderboard(guildId, limit = 10) {
+    return Object.entries(this.allLevelData(guildId))
+      .filter(([, v]) => (v.xp || 0) > 0)
+      .sort((a, b) => (b[1].xp || 0) - (a[1].xp || 0))
+      .slice(0, limit)
+      .map(([userId, v]) => ({ userId, xp: v.xp || 0, level: levelOf(v.xp || 0), voiceSeconds: v.voiceSeconds || 0 }))
+      .map((x, i) => ({ ...x, rank: i + 1 }));
+  }
+
   // ---------- system ----------
   getSystem() {
     return this.db.system || (this.db.system = { ownerId: null });
@@ -303,3 +355,19 @@ export class Store {
 }
 
 export const store = new Store();
+
+// ---------------------------------------------------------------- Level-Formel
+// XP-Kurve: level n erfordert n^2 * 25 XP gesamt (Level 1 = 25 XP, Level 2 = 100 XP, ...)
+export function levelOf(xp) {
+  return Math.floor(Math.sqrt(Math.max(0, xp) / 25));
+}
+export function xpForLevel(level) {
+  return level * level * 25;
+}
+export function xpIntoLevel(xp) {
+  const l = levelOf(xp);
+  return Math.max(0, xp - xpForLevel(l));
+}
+export function xpToNext(level) {
+  return xpForLevel(level + 1) - xpForLevel(level);
+}

@@ -6,6 +6,7 @@ import { more } from './commands-more.js';
 import { ticketGroup } from './commands-ticket.js';
 import { moderation } from './commands-moderation.js';
 import { general } from './commands-general.js';
+import { levels } from './commands-level.js';
 import {
   createTicket,
   closeTicket,
@@ -230,4 +231,4 @@ const base = [
   },
 ];
 
-export const commands = [...base, ...more, ...ticketGroup, ...moderation, ...general];
+export const commands = [...base, ...more, ...ticketGroup, ...moderation, ...general, ...levels];

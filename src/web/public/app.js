@@ -86,6 +86,7 @@ const NAV = [
   { id: 'stats', icon: '📈', label: 'Server-Stats' },
   { id: 'protection', icon: '🔐', label: 'Schutz' },
   { id: 'activity', icon: '🏅', label: 'Aktivität' },
+  { id: 'levels', icon: '🏆', label: 'Level-System' },
   { id: 'social', icon: '📱', label: 'Social Media' },
   { group: 'Verwaltung' },
   { id: 'settings', icon: '⚙️', label: 'Einstellungen' },
@@ -189,6 +190,7 @@ function render() {
     support: () => renderModule('support', viewSupport),
     protection: () => renderModule('protection', viewProtection),
     activity: () => renderModule('activity', viewActivity),
+    levels: () => renderModule('levels', viewLevels),
     social: () => renderModule('social', viewSocial),
     settings: renderSettings,
     logs: renderLogs,
@@ -1531,6 +1533,85 @@ function viewActivity(gv, d) {
   });
 }
 
+function viewLevels(gv, d) {
+  const c = d.config || {};
+  const rewards = c.rewards || [];
+  const top = d.leaderboard || [];
+  const textCh = (d.meta.textChannels || []).map((x) => ({ id: x.id, name: `#${x.name}` }));
+  const roleOpts = (d.meta.roles || []).map((r) => ({ id: r.id, name: `@${r.name}` }));
+  const rankIcon = (r) => (r === 1 ? '🥇' : r === 2 ? '🥈' : r === 3 ? '🥉' : `${r}.`);
+  const pct = (rec) => {
+    const level = Math.floor(Math.sqrt(rec.xp / 25));
+    const into = rec.xp - level * level * 25;
+    const next = (level + 1) * (level + 1) * 25 - level * level * 25;
+    return { level, pct: next > 0 ? Math.min(100, Math.round((into / next) * 100)) : 0 };
+  };
+  main().innerHTML = `
+    <div class="hero"><div class="icon">🏆</div><div class="t">
+      <h1>Level-System</h1>
+      <p class="sub">Deine Mitglieder sammeln XP für Nachrichten und Sprachzeit – mit Rollen-Belohnungen und Rangliste.</p>
+    </div></div>
+    <div class="card"><p class="small muted" style="margin:0"><b>So funktioniert es:</b> 1 Nachricht = <b>${c.textXp ?? 1} XP</b> (mit Cooldown), pro Stunde im Sprachkanal = <b>${c.voiceXp ?? 50} XP</b>. Mit <code>/level</code> verwalten Admins das System, mit <code>/rank</code> &amp; <code>/leaderboard</code> sehen Mitglieder ihren Stand.</p></div>
+    <div class="grid g2 mt">
+      <div class="card">${fieldSwitchNoL('Level-System aktivieren', 'lvOn', c.enabled, 'XP für Nachrichten und Sprachzeit wird gesammelt')}</div>
+      <div class="card"><label>Kanal für Level-Up-Nachrichten</label>${selectHtml('lvChan', textCh, c.announceChannelId, '— aus —')}<p class="muted small">Wenn ein Mitglied ein Level schafft, wird es hier verkündet.</p></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><label>XP pro Nachricht</label><input id="lvTextXp" type="number" min="1" value="${c.textXp ?? 1}"><p class="muted small">Cooldown verhindert Spammen.</p></div>
+      <div class="card"><label>Cooldown (Sekunden)</label><input id="lvCooldown" type="number" min="1" value="${c.cooldownSeconds ?? 30}"></div>
+    </div>
+    <div class="card mt"><label>XP pro Stunde im Sprachkanal</label>
+      <div class="row"><input type="range" id="lvVoiceXp" min="10" max="200" step="5" value="${c.voiceXp ?? 50}" style="flex:1"><b id="lvVoiceXpV" class="muted" style="width:70px;text-align:right">${c.voiceXp ?? 50}</b></div>
+    </div>
+    <h2>Level-Rollen (Belohnungen)</h2>
+    <div class="card mt">
+      <div id="lvRewards">${rewards.length
+        ? rewards.sort((a, b) => a.level - b.level).map((r, i) => `
+          <div class="row between wrap" data-lvr="${esc(r.id || i)}" style="padding:6px 0;border-bottom:1px solid var(--border)">
+            <b>Level ${r.level}</b><span><@${r.roleId}> → <code>${esc(r.roleId)}</code></span>
+            <button class="btn red sm lv_reward_rm" data-level="${r.level}">✕</button>
+          </div>`).join('')
+        : '<p class="muted">Noch keine Level-Rollen. Füge unten eine hinzu.</p>'}</div>
+      <div class="row wrap mt">
+        <input id="lvRewLevel" type="number" min="1" placeholder="Level" style="max-width:110px">
+        ${selectHtml('lvRewRole', roleOpts, '', '— Rolle wählen —')}
+        <button class="btn green sm" id="lvRewAdd">＋ Rolle hinzufügen</button>
+      </div>
+    </div>
+    <h2>Rangliste (Top 10)</h2>
+    <div class="card mt"><table><thead><tr><th>#</th><th>Mitglied</th><th>Level</th><th>Fortschritt</th><th>XP</th></tr></thead>
+      <tbody>${top.map((x) => {
+        const p = pct(x);
+        return `<tr><td>${rankIcon(x.rank)}</td><td><code>${esc(x.userId)}</code></td><td>${p.level}</td><td>${p.pct}%</td><td>${x.xp}</td></tr>`;
+      }).join('') || '<tr><td colspan="5" class="muted">Noch keine erfasste Aktivität.</td></tr>'}</tbody></table></div>
+    <div class="row mt"><button class="btn ghost sm" id="lvSave">💾 Speichern</button></div>`;
+
+  const vx = $('#lvVoiceXp');
+  vx.addEventListener('input', () => { $('#lvVoiceXpV').textContent = vx.value; });
+  $('#lvRewAdd').addEventListener('click', () => {
+    const level = Math.max(1, parseInt($('#lvRewLevel').value, 10) || 1);
+    const roleId = $('#lvRewRole').value;
+    if (!roleId) return toast('Bitte eine Rolle wählen.');
+    c.rewards = [...(c.rewards || []).filter((r) => r.level !== level), { level, roleId }];
+    viewLevels(gv, d);
+  });
+  document.querySelectorAll('.lv_reward_rm').forEach((b) => b.addEventListener('click', () => {
+    const level = Number(b.dataset.level);
+    c.rewards = (c.rewards || []).filter((r) => r.level !== level);
+    viewLevels(gv, d);
+  }));
+  $('#lvSave').addEventListener('click', () => {
+    saveModuleConfig(gv, 'levels', {
+      enabled: $('#lvOnCheck').checked,
+      announceChannelId: $('#lvChan').value || null,
+      textXp: Math.max(1, parseInt($('#lvTextXp').value, 10) || 1),
+      cooldownSeconds: Math.max(1, parseInt($('#lvCooldown').value, 10) || 30),
+      voiceXp: parseInt(vx.value, 10) || 50,
+      rewards: c.rewards || [],
+    });
+  });
+}
+
 function viewSocial(gv, d) {
   const c = d.config;
   main().innerHTML = `
@@ -1572,6 +1653,7 @@ UI_BUILDERS.privatevoice = viewPrivateVoice;
 UI_BUILDERS.support = viewSupport;
 UI_BUILDERS.protection = viewProtection;
 UI_BUILDERS.activity = viewActivity;
+UI_BUILDERS.levels = viewLevels;
 UI_BUILDERS.social = viewSocial;
 
 init();
