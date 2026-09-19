@@ -235,19 +235,120 @@ function flushCounts() {
   }
 }
 
-// ---------------------------------------------------------------- support temp channels
+// ---------------------------------------------------------------- Private Voice (temporäre Kanäle)
 
-let tempChannels = new Map(); // channelId -> {name, at, userCount}
+const privateChannels = new Map(); // channelId -> { ownerId, at }
+const lobbyWaiters = new Map();    // userId -> { at }
 
-async function cleanupTempChannels(client) {
-  for (const [chId, rec] of tempChannels) {
+function pvFormatRaw(mode, custom) {
+  if (mode === 'custom') return String(custom || '%USERNAME%');
+  if (mode === 'USER_GLOBAL_NAME') return '%USER_GLOBAL_NAME%';
+  if (mode === 'JOIN_USER_GLOBAL_NAME') return '⏳ Join %USER_GLOBAL_NAME%';
+  if (mode === 'JOIN_USERNAME') return '⏳ Join %USERNAME%';
+  return '%USERNAME%';
+}
+
+function fillPvName(tpl, member) {
+  let out = String(tpl);
+  const realname = member.displayName || member.user?.globalName || member.user?.username || member.id;
+  out = out.replaceAll('%USER_GLOBAL_NAME%', realname).replaceAll('%USERNAME%', member.user?.username || realname).replaceAll('%USER_ID%', member.id).replaceAll('@', '');
+  return out.slice(0, 100).trim();
+}
+
+async function onVoiceStateUpdate(oldS, newS) {
+  const member = newS.member || oldS.member;
+  if (!member || member.user?.bot) return;
+  const guild = newS.guild || oldS.guild;
+  if (!guild) return;
+  const cfg = store.getConfig(guild.id);
+  if (!cfg) return;
+
+  const pv = cfg.privatevoice;
+  const joinedLobby = newS.channelId && newS.channelId === pv?.lobbyChannelId;
+  const leftLobby = oldS.channelId && oldS.channelId === pv?.lobbyChannelId;
+  const st = cfg.support;
+
+  // ---- Wartemusik-lose Support-Benachrichtigung: Neuer User im Warteraum ----
+  if (st?.enabled && newS.channelId) {
+    const room = (st.rooms || []).find((r) => r.enabled && r.waitingChannelId === newS.channelId);
+    if (room && oldS.channelId !== newS.channelId) {
+      await notifyWaitRoom(guild, cfg, room, member, st).catch(() => {});
+    }
+  }
+  if (joinedLobby) {
+    await createPrivateChannel(guild, pv, member).catch((e) => console.error('[PV] Create:', e.message));
+  }
+  if (leftLobby) {
+    // kurze Wartezeit gegen Doppel-Wechsel
+  }
+  // ---- Private Kanäle aufräumen: Kanal verlassen -> löschen, wenn leer ----
+  if (oldS.channelId && privateChannels.has(oldS.channelId) && newS.channelId !== oldS.channelId) {
+    const rec = privateChannels.get(oldS.channelId);
+    const ch = guild.channels.cache.get(oldS.channelId);
+    if (ch && (!ch.members || ch.members.size === 0) && rec) {
+      privateChannels.delete(oldS.channelId);
+      setTimeout(async () => {
+        try {
+          const fresh = guild.channels.cache.get(ch.id);
+          if (fresh && fresh.members.size === 0) await fresh.delete('Privater Kanal wird gelöscht.');
+        } catch { /* ignore */ }
+      }, 8000);
+    }
+  }
+}
+
+async function createPrivateChannel(guild, pv, member) {
+  if (!pv?.enabled || !pv?.lobbyChannelId) return;
+  const lobby = guild.channels.cache.get(pv.lobbyChannelId);
+  if (!lobby) return;
+  // Wait-Sperre gegen Legen-Spam (max. 1 Kanal / 3 Sek. pro User)
+  const last = lobbyWaiters.get(member.id);
+  if (last && Date.now() - last.at < 3000) return;
+  lobbyWaiters.set(member.id, { at: Date.now() });
+  const cat = pv.categoryId ? guild.channels.cache.get(pv.categoryId) : null;
+  const validCat = cat && cat.type === ChannelType.GuildCategory;
+  const parentId = validCat ? cat.id : (lobby.parent ? lobby.parent.id : undefined);
+  const nameTpl = pv.nameMode === 'custom' ? pv.customName : pvFormatRaw(pv.nameMode, pv.customName);
+  const wNameTpl = pv.waitMode === 'custom' ? pv.customWaitName : pvFormatRaw(pv.waitMode, pv.customWaitName);
+  const ch = await guild.channels.create({
+    name: fillPvName(nameTpl, member),
+    type: ChannelType.GuildVoice,
+    parent: parentId,
+    bitrate: Math.max(8, Math.min(384, Number(pv.bitrate) || 64)) * 1000,
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: ['ViewChannel'] },
+      { id: member.id, allow: ['ViewChannel', 'Connect', 'Speak', 'Stream', 'ManageChannels'] },
+    ],
+  });
+  privateChannels.set(ch.id, { ownerId: member.id, at: Date.now() });
+  await member.voice.setChannel(ch.id, 'Privater Voice-Kanal').catch(() => {});
+}
+
+async function notifyWaitRoom(guild, cfg, room, member, st) {
+  const notify = guild.channels.cache.get(room.notifyChannelId);
+  if (!notify || !notify.isTextBased()) return;
+  const tplRoom = room.prefix ? `${room.prefix} ${member.displayName || member.user?.username}` : (member.displayName || member.user?.username);
+  const ping = room.teamRoleId ? `<@&${room.teamRoleId}> ` : '';
+  const e = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('🎧 Support-Anfrage')
+    .setDescription(`**${member.user?.username}** wartet auf Unterstützung.\nWarteraum: <#${room.waitingChannelId}>${room.name ? ` · **${room.name}**` : ''}`)
+    .addFields({ name: 'Kanal', value: tplRoom ? 'Support-Kanal wird automatisch erstellt.' : '–', inline: true })
+    .setTimestamp();
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`sup:take:${room.id}:${member.id}`).setLabel('Fall übernehmen').setStyle(ButtonStyle.Success).setEmoji('🎧'),
+    new ButtonBuilder().setCustomId(`sup:later:${member.id}`).setLabel('Später').setStyle(ButtonStyle.Secondary)
+  );
+  await notify.send({ content: `${ping}Neue Support-Anfrage!`, embeds: [e], components: [row] }).catch(() => {});
+}
+
+async function cleanupPrivateChannels(client) {
+  for (const [chId, rec] of privateChannels) {
     const ch = client.channels.cache.get(chId);
-    if (!ch) { tempChannels.delete(chId); continue; }
-    const members = ch.members?.size || 0;
-    rec.userCount = members;
-    if (members === 0 && Date.now() - rec.at > 10 * 60_000) {
-      try { await ch.delete('Temporärer Support-Kanal'); } catch { /* ignore */ }
-      tempChannels.delete(chId);
+    if (!ch) { privateChannels.delete(chId); continue; }
+    if (!ch.members || ch.members.size === 0) {
+      privateChannels.delete(chId);
+      try { await ch.delete('Privater Kanal ist leer.'); } catch { /* ignore */ }
     }
   }
 }
@@ -263,15 +364,13 @@ export function startModules(client) {
     const g = member.guild;
     onMemberRemove(member, g).catch(() => {});
   });
-  client.on(Events.ChannelCreate, (ch) => {
-    if (ch.isVoiceBased() && ch.name?.startsWith('🎧')) {
-      tempChannels.set(ch.id, { name: ch.name, at: Date.now(), userCount: ch.members?.size || 0 });
-    }
+  client.on(Events.VoiceStateUpdate, (oldS, newS) => {
+    onVoiceStateUpdate(oldS, newS).catch((e) => console.error('[MOD] Voice:', e.message));
   });
   client.on(Events.MessageCreate, (m) => onMessage(m).catch(() => {}));
 
   setInterval(() => refreshAllStats(client), 5 * 60_000);
-  setInterval(() => cleanupTempChannels(client), 60_000);
+  setInterval(() => cleanupPrivateChannels(client), 60_000);
   if (!socialTimer) {
     socialTimer = setInterval(() => checkSocial(client).catch(() => {}), 5 * 60_000);
     checkSocial(client).catch(() => {});
@@ -288,4 +387,4 @@ async function refreshAllStats(client) {
   }
 }
 
-export function clearTempTracking() { tempChannels.clear(); }
+export function clearTempTracking() { privateChannels.clear(); }

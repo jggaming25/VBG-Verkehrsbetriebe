@@ -80,11 +80,12 @@ const NAV = [
   { id: 'suggestions', icon: '💡', label: 'Vorschläge' },
   { id: 'news', icon: '📰', label: 'News' },
   { id: 'moderation', icon: '🛡️', label: 'Moderation' },
-  { id: 'welcome', icon: '👋', label: 'Welcome & Leave' },
-  { id: 'stats', icon: '📈', label: 'Server Stats' },
-  { id: 'support', icon: '🎧', label: 'Support / Voice' },
-  { id: 'protection', icon: '🔐', label: 'Guild Protection' },
-  { id: 'activity', icon: '🏅', label: 'Activity Rewards' },
+  { id: 'welcome', icon: '👋', label: 'Willkommen' },
+  { id: 'privatevoice', icon: '🎤', label: 'Private Kanäle' },
+  { id: 'support', icon: '🎧', label: 'Voice-Support' },
+  { id: 'stats', icon: '📈', label: 'Server-Stats' },
+  { id: 'protection', icon: '🔐', label: 'Schutz' },
+  { id: 'activity', icon: '🏅', label: 'Aktivität' },
   { id: 'social', icon: '📱', label: 'Social Media' },
   { group: 'Verwaltung' },
   { id: 'settings', icon: '⚙️', label: 'Einstellungen' },
@@ -184,6 +185,7 @@ function render() {
     moderation: () => renderModule('moderation', viewModeration),
     welcome: () => renderModule('welcome', viewWelcome),
     stats: () => renderModule('stats', viewStats),
+    privatevoice: () => renderModule('privatevoice', viewPrivateVoice),
     support: () => renderModule('support', viewSupport),
     protection: () => renderModule('protection', viewProtection),
     activity: () => renderModule('activity', viewActivity),
@@ -622,6 +624,13 @@ function switchRow(id, checked, label, hint = '') {
     <div class="row mt"><label class="switch" style="margin:0"><input type="checkbox" id="${id}" ${checked ? 'checked' : ''}><span class="track"></span><span class="knob"></span></label></div></div>`;
 }
 
+function switchLine(id, checked, label, cls = '', value = '') {
+  return `<label class="switchLine ${cls}" style="margin:0;cursor:pointer">
+    <span class="switch" style="margin:0;cursor:pointer"><input type="checkbox" class="${id}" ${checked ? 'checked' : ''} ${value ? `value="${esc(value)}"` : ''}><span class="track"></span><span class="knob"></span></span>
+    <span class="switchText">${label}</span>
+  </label>`;
+}
+
 function rgbColorPicker(id, rgb) {
   return `<div class="rgbpicker">
     <input type="color" id="${id}_color" value="#${rgbToHex(rgb.r, rgb.g, rgb.b)}">
@@ -723,8 +732,8 @@ function catCard(c, i) {
     <div class="card mt"><label>Rollen (Zugriff auf Tickets dieser Kategorie)</label>
       <select multiple class="cat_roles">${optRoles(c.roles || [])}</select>
       <div class="row wrap mt">
-        <label class="switch" style="margin:0 30px 0 0"><input type="checkbox" class="cat_onbehalf" ${c.allowOnBehalf ? 'checked' : ''}><span class="track"></span><span class="knob"></span><span style="margin-left:34px;font-weight:600;font-size:12px">Im Auftrag erlauben</span></label>
-        <label class="switch" style="margin:0"><input type="checkbox" class="cat_embedov" ${c.embedOverride ? 'checked' : ''}><span class="track"></span><span class="knob"></span><span style="margin-left:34px;font-weight:600;font-size:12px">Eröffnungs-Embed überschreiben</span></label>
+        ${switchLine('cat_onbehalf', c.allowOnBehalf, 'Im Auftrag erlauben')}
+        ${switchLine('cat_embedov', c.embedOverride, 'Eröffnungs-Embed überschreiben')}
       </div>
       <div class="ovEmbed" style="display:${c.embedOverride ? 'block' : 'none'}">
         <div class="grid g2 mt">
@@ -1335,7 +1344,7 @@ function viewStats(gv, d) {
     <div class="card mt">
       <label>Statistik-Kanäle erstellen (können gelöscht werden)</label>
       <div class="row wrap">
-        ${['👥', '🟢', '⚡', '🎧'].map((k) => `<label class="switch" style="margin:0 14px 0 0"><input type="checkbox" class="sKind" value="${k}" ${k === '👥' ? 'checked' : ''}><span class="track"></span><span class="knob"></span><span style="margin-left:34px;font-weight:600">${k === '👥' ? 'Mitglieder' : k === '🟢' ? 'Online' : k === '⚡' ? 'Boosts' : 'Im Voice'}</span></label>`).join('')}
+        ${['👥', '🟢', '⚡', '🎧'].map((k) => `${switchLine('sKind', k === '👥', k === '👥' ? 'Mitglieder' : k === '🟢' ? 'Online' : k === '⚡' ? 'Boosts' : 'Im Voice', 'sKindLine', k)}`).join('')}
       </div>
       <div class="row mt"><button class="btn green sm" id="sSetup">⚙️ Statistik-Kanäle einrichten</button></div>
     </div>`;
@@ -1349,38 +1358,140 @@ function viewStats(gv, d) {
   });
 }
 
-function viewSupport(gv, d) {
-  const c = d.config;
+function viewPrivateVoice(gv, d) {
+  const c = d.config || {};
+  const cats = (d.meta.categories || []).map((x) => ({ id: x.id, name: `📁 ${x.name}` }));
+  const vcs = (d.meta.voiceChannels || []);
+  const vcOpts = vcs.map((x) => ({ id: x.id, name: `🎤 ${x.name}` }));
+  const nameRadio = (id, val, label, desc) => `<label class="fmtOpt" data-fmt="${id}" style="margin-bottom:8px">
+    <input type="radio" name="pvName" value="${id}" ${c.nameMode === id ? 'checked' : ''}>
+    <b>${label}</b><p class="muted small">${desc}</p></label>`;
+  const waitRadio = (id, val, label, desc) => `<label class="fmtOpt" data-fmt="${id}" style="margin-bottom:8px">
+    <input type="radio" name="pvWait" value="${id}" ${c.waitMode === id ? 'checked' : ''}>
+    <b>${label}</b><p class="muted small">${desc}</p></label>`;
   main().innerHTML = `
-    <div class="hero"><div class="icon">🎧</div><div class="t"><h1>Support / Voice</h1><p class="sub">Temporäre Support-Voice-Kanäle und Öffnungszeiten.</p></div></div>
+    <div class="hero"><div class="icon">🎤</div><div class="t">
+      <h1>Private Kanäle</h1>
+      <p class="sub">Jedes Mitglied kann sich einen eigenen Sprachkanal erstellen – einfach in den Start-Kanal gehen.</p>
+    </div></div>
+    <div class="card"><p class="small muted" style="margin:0"><b>So funktioniert es:</b> Wer den <b>Start-Kanal</b> (Lobby) betritt, bekommt automatisch einen eigenen Sprachkanal. Verlässt er den Kanal, wird er wieder gelöscht. Der Besitzer kann seinen Kanal verwalten (umbenennen, Limit, sperren, …).</p></div>
     <div class="grid g2 mt">
-      <div class="card"><label>Kategorie für temporäre Voice-Kanäle</label>${selectHtml('svCat', chans(d.meta).filter((x) => x.id && x.id !== ''), c.voiceCategoryId)}</div>
-      <div class="card"><label>Team-Rolle (Support)</label>${selectHtml('svTeam', roles(d.meta), c.teamRoleId)}</div>
-      <div class="card"><label>Benachrichtigungs-Kanal</label>${selectHtml('svNotify', chans(d.meta), c.notifyChannelId)}</div>
-      <div class="card"><label>Kanalname-Vorlage</label><input id="svName" value="${esc(c.tempChannelName || '🎧 Support-{n}')}"></div>
+      <div class="card"><label>Start-Kanal (Lobby)</label>${selectHtml('pvLobby', vcOpts, c.lobbyChannelId, '— Kanal wählen —')}</div>
+      <div class="card"><label>Kategorie (wo neue Kanäle entstehen)</label>${selectHtml('pvCat', cats, c.categoryId, '— wie Lobby —')}</div>
     </div>
-    <h2>Öffnungszeiten</h2>
-    <div class="card mt">
-      <div class="grid g2">
-        <div><label>Tag</label><select id="svDay">${['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'].map((x) => `<option>${x}</option>`).join('')}</select></div>
-        <div class="row"><div style="flex:1"><label>Von</label><input id="svStart" type="time" value="18:00"></div><div style="flex:1"><label>Bis</label><input id="svEnd" type="time" value="22:00"></div></div>
+    <div class="grid g2 mt">
+      <div class="card"><label>Name neuer Kanäle – mit was?</label>
+        ${nameRadio('USERNAME', 'USERNAME', 'Benutzername', 'z.B. „pluto"')}
+        ${nameRadio('USER_GLOBAL_NAME', 'USER_GLOBAL_NAME', 'Anzeigename', 'z.B. „Pluto" (Nickname bevorzugt)')}
+        ${nameRadio('custom', 'custom', 'Eigenes Format', 'mit %USERNAME% / %USER_ID% / %USER_GLOBAL_NAME% / %DISPLAY_NAME%')}
+        <div id="pvCustomWrap" style="display:${c.nameMode === 'custom' ? 'block' : 'none'}"><input id="pvCustomName" value="${esc(c.customName || '🔊 | %USERNAME%')}"></div>
       </div>
-      <div class="row mt"><button class="btn sm ghost" id="svAddTime">+ Zeitfenster</button><button class="btn sm red ghost" id="svClearTimes">Zeiten löschen</button></div>
-      <div class="mt" id="svTimes"></div>
+      <div class="card"><label>Kanal-Qualität (Bitrate)</label>
+        <div class="row"><input type="range" id="pvBitrate" min="8" max="384" step="8" value="${Number(c.bitrate) || 64}" style="flex:1"><b id="pvBitrateV" class="muted" style="width:70px;text-align:right">${Number(c.bitrate) || 64} kbps</b></div>
+        <p class="muted small">Weniger = stabiler für alle. 64 ist der Standard, höher klingt besser, braucht aber mehr Internet.</p>
+      </div>
     </div>
-    <div class="row mt"><button class="btn ghost sm" id="svSave">💾 Speichern</button></div>`;
-  $('#svTimes').innerHTML = (c.times || []).length
-    ? `<table><thead><tr><th>Tag</th><th>Von</th><th>Bis</th></tr></thead><tbody>${c.times.map((t) => `<tr><td>${esc(t.day)}</td><td>${esc(t.start)}</td><td>${esc(t.end)}</td></tr>`).join('')}</tbody></table>`
-    : '<p class="muted">Noch keine Öffnungszeiten.</p>';
-  $('#svAddTime').addEventListener('click', () => {
-    const times = [...(c.times || []), { day: $('#svDay').value, start: $('#svStart').value || '00:00', end: $('#svEnd').value || '00:00' }];
-    saveModuleConfig(gv, 'support', { times });
-  });
-  $('#svClearTimes').addEventListener('click', () => saveModuleConfig(gv, 'support', { times: [] }));
-  $('#svSave').addEventListener('click', () => saveModuleConfig(gv, 'support', {
-    enabled: true, voiceCategoryId: $('#svCat').value || null, teamRoleId: $('#svTeam').value || null,
-    notifyChannelId: $('#svNotify').value || null, tempChannelName: $('#svName').value || '🎧 Support-{n}',
+    <h2>Warteraum-Kanal (wenn der Kanal gesperrt ist, optional)</h2>
+    <div class="card mt">
+      <p class="muted small">Ein gesperrter privater Kanal kann später einen „Warteraum" bekommen, in dem Gäste warten, bis der Besitzer sie reinlässt. Hier legst du den Namen fest:</p>
+      <div class="grid g2">
+        ${waitRadio('JOIN_USERNAME', 'JOIN_USERNAME', '⏳ Join %USERNAME%', 'z.B. „⏳ Join pluto"')}
+        ${waitRadio('JOIN_USER_GLOBAL_NAME', 'JOIN_USER_GLOBAL_NAME', '⏳ Join %USER_GLOBAL_NAME%', 'z.B. „⏳ Join Pluto"')}
+        ${waitRadio('custom', 'custom', 'Eigenes Format', 'mit denselben Platzhaltern')}
+      </div>
+      <div id="pvWaitWrap" style="display:${c.waitMode === 'custom' ? 'block' : 'none'}"><input id="pvCustomWait" value="${esc(c.customWaitName || '⏳ | Join %USERNAME%')}"></div>
+    </div>
+    <div class="row mt"><button class="btn green sm" id="pvSave">💾 Speichern und aktivieren</button></div>`;
+
+  document.querySelectorAll('input[name="pvName"]').forEach((r) => r.addEventListener('change', () => {
+    $('#pvCustomWrap').style.display = r.value === 'custom' ? 'block' : 'none';
   }));
+  document.querySelectorAll('input[name="pvWait"]').forEach((r) => r.addEventListener('change', () => {
+    $('#pvWaitWrap').style.display = r.value === 'custom' ? 'block' : 'none';
+  }));
+  const br = $('#pvBitrate');
+  br.addEventListener('input', () => { $('#pvBitrateV').textContent = br.value + ' kbps'; });
+  $('#pvSave').addEventListener('click', () => {
+    saveModuleConfig(gv, 'privatevoice', {
+      enabled: true,
+      lobbyChannelId: $('#pvLobby').value || null,
+      categoryId: $('#pvCat').value || null,
+      nameMode: (document.querySelector('input[name="pvName"]:checked') || {}).value || 'USERNAME',
+      customName: $('#pvCustomName').value || '🔊 | %USERNAME%',
+      waitMode: (document.querySelector('input[name="pvWait"]:checked') || {}).value || 'JOIN_USERNAME',
+      customWaitName: $('#pvCustomWait').value || '⏳ | Join %USERNAME%',
+      bitrate: parseInt(br.value, 10) || 64,
+    });
+  });
+}
+
+function viewSupport(gv, d) {
+  const c = d.config || {};
+  const rooms = c.rooms || [];
+  const vcs = (d.meta.voiceChannels || []);
+  const texts = (d.meta.textChannels || [d.meta.channels || []].flat()).filter((x) => x && x.type !== 2);
+  const allRoles = d.meta.roles || [];
+  const vcOpts = vcs.map((x) => ({ id: x.id, name: `🎤 ${x.name}` }));
+  const textOpts = texts.map((x) => ({ id: x.id, name: `#${x.name}` }));
+  const roleOpts = allRoles.map((r) => ({ id: r.id, name: `@${r.name}` }));
+  main().innerHTML = `
+    <div class="hero"><div class="icon">🎧</div><div class="t">
+      <h1>Voice-Support</h1>
+      <p class="sub">Deine Mitglieder warten in einem Sprachkanal und bekommen Hilfe. Du legst fest, wer benachrichtigt wird.</p>
+    </div></div>
+    <div class="card"><p class="small muted" style="margin:0"><b>So funktioniert es:</b> Ein Mitglied betritt den <b>Warteraum</b> (Sprachkanal). Dann wird im <b>Benachrichtigungs-Kanal</b> eine Nachricht mit Knopf „Fall übernehmen“ gepostet und deine <b>Team-Rolle</b> gemeldet. Wer übernimmt, spricht mit dem Mitglied in seinem Sprachkanal.</p></div>
+    <div class="row between wrap mt">
+      <h2 style="margin:0">Warteräume</h2>
+      <button class="btn sm" id="spNew">＋ Warteraum erstellen</button>
+    </div>
+    <div id="spRooms" class="mt"></div>
+    <button class="btn ghost sm mt" id="spSave">💾 Speichern</button>`;
+
+  $('#spRooms').innerHTML = rooms.length
+    ? rooms.map((r, i) => `
+      <div class="card mt" data-room="${esc(r.id)}">
+        <div class="row between">
+          <div class="row"><label class="switch" style="margin:0"><input type="checkbox" class="sp_on" ${r.enabled ? 'checked' : ''}><span class="track"></span><span class="knob"></span></label>
+            <b>${esc(r.name || 'Warteraum')}</b></div>
+          <button class="btn red sm sp_del">🗑️</button>
+        </div>
+        <div class="grid g2 mt">
+          <div><label>Name des Warteraums</label><input class="sp_name" value="${esc(r.name || '')}"></div>
+          <div><label>Anzeige-Präfix (für Support-Kanal, optional)</label><input class="sp_prefix" value="${esc(r.prefix || '')}" placeholder="z.B. Support"></div>
+        </div>
+        <div class="grid g2 mt">
+          <div><label>Warteraum (Sprachkanal – wer dort reinkommt, braucht Hilfe)</label>${selectHtml('spWait' + i, vcOpts, r.waitingChannelId)}</div>
+          <div><label>Benachrichtigungs-Kanal</label>${selectHtml('spNotif' + i, textOpts, r.notifyChannelId)}</div>
+        </div>
+        <div class="card mt"><label>Team-Rolle (wird bei neuen Anfragen gemeldet)</label>${selectHtml('spTeam' + i, roleOpts, r.teamRoleId)}</div>
+      </div>`).join('')
+    : '<p class="muted">Noch keine Warteräume. Klicke auf „Warteraum erstellen“.';
+
+  $('#spNew').addEventListener('click', () => {
+    rooms.push({ id: 'room_' + Math.random().toString(36).slice(2, 9), name: 'Neuer Warteraum', enabled: true, waitingChannelId: null, notifyChannelId: null, teamRoleId: null, prefix: '', times: [] });
+    viewSupport(gv, d);
+  });
+  document.querySelectorAll('.sp_del').forEach((b) => {
+    const id = b.closest('[data-room]').dataset.room;
+    b.addEventListener('click', () => {
+      c.rooms = rooms.filter((r) => r.id !== id);
+      viewSupport(gv, d);
+    });
+  });
+  document.querySelectorAll('.sp_on').forEach((t, idx) => { t.dataset.idx = idx; });
+
+  $('#spSave').addEventListener('click', () => {
+    rooms.forEach((r, i) => {
+      const selWait = $(`#spWait${i}`); const selNotif = $(`#spNotif${i}`); const selTeam = $(`#spTeam${i}`);
+      r.waitingChannelId = selWait ? selWait.value || null : r.waitingChannelId;
+      r.notifyChannelId = selNotif ? selNotif.value || null : r.notifyChannelId;
+      r.teamRoleId = selTeam ? selTeam.value || null : r.teamRoleId;
+      const nameIn = document.querySelectorAll('.sp_name')[i]; if (nameIn) r.name = nameIn.value || r.name;
+      const prefIn = document.querySelectorAll('.sp_prefix')[i]; if (prefIn) r.prefix = prefIn.value || '';
+      const onIn = document.querySelectorAll('.sp_on')[i]; if (onIn) r.enabled = onIn.checked;
+    });
+    saveModuleConfig(gv, 'support', { enabled: true, rooms });
+  });
 }
 
 function viewProtection(gv, d) {
@@ -1457,6 +1568,7 @@ UI_BUILDERS.news = viewNews;
 UI_BUILDERS.moderation = viewModeration;
 UI_BUILDERS.welcome = viewWelcome;
 UI_BUILDERS.stats = viewStats;
+UI_BUILDERS.privatevoice = viewPrivateVoice;
 UI_BUILDERS.support = viewSupport;
 UI_BUILDERS.protection = viewProtection;
 UI_BUILDERS.activity = viewActivity;

@@ -12,9 +12,14 @@ export async function getMember(client, guildId, userId) {
   }
 }
 
+export function canManageServer(member) {
+  if (!member) return false;
+  return member.permissions.has(PermissionFlagsBits.Administrator) || member.permissions.has(PermissionFlagsBits.ManageGuild);
+}
+
 export function isAdmin(member, cfg) {
   if (!member) return false;
-  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  if (canManageServer(member)) return true;
   const roles = new Set([
     ...(cfg?.adminRoles || []),
     config.adminRoleId,

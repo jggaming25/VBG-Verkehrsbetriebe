@@ -71,14 +71,19 @@ export function defaultConfig(guildId) {
       message: '{user} hat den Server verlassen. 👋',
     },
     stats: { enabled: false, prefix: '📊', channels: [] }, // channels = [{id,name,kind}]
+    privatevoice: {
+      enabled: false,
+      lobbyChannelId: null,      // 'Erstellen'-Kanal: Wer dort hineingeht, bekommt seinen eigenen Kanal
+      categoryId: null,          // Kategorie, in der die privaten Kanäle entstehen
+      nameMode: 'USERNAME',      // USERNAME | USER_GLOBAL_NAME | custom
+      customName: '🔊 | %USERNAME%',
+      waitMode: 'JOIN_USERNAME', // JOIN_USERNAME | JOIN_USER_GLOBAL_NAME | custom
+      customWaitName: '⏳ | Join %USERNAME%',
+      bitrate: 64,               // in kbps
+    },
     support: {
       enabled: false,
-      lobbyChannelId: null,     // Wo User dazukommen / Button
-      voiceCategoryId: null,    // Kategorie fuer temporaere Voice-Kanaele
-      teamRoleId: null,
-      notifyChannelId: null,
-      tempChannelName: '🎧 Support-{n}',
-      times: [],                // [{day, start, end}]
+      rooms: [],                 // Warteräume: [{id,name,waitingChannelId,notifyChannelId,teamRoleId,enabled,prefix,times:[]}]
     },
     protection: {
       enabled: false,

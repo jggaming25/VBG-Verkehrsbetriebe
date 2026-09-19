@@ -405,8 +405,10 @@ export const general = [
       const sub = i.options.getSubcommand(true);
 
       if (sub === 'invite') {
-        const cat = sup.voiceCategoryId ? g.channels.cache.get(sup.voiceCategoryId) : null;
-        const name = (sup.tempChannelName || '🎧 Support-{n}').replace('{n}', String(Date.now() % 1000));
+        const room = (sup.rooms || []).find((r) => r.enabled);
+        const catId = room ? room.waitingChannelId : null;
+        const cat = catId ? g.channels.cache.get(catId)?.parent : null;
+        const name = `${room?.prefix || 'Support'} ${i.user.username}`.slice(0, 100);
         const ch = await g.channels.create({
           name,
           type: ChannelType.GuildVoice,
@@ -422,8 +424,8 @@ export const general = [
       }
 
       if (sub === 'times') {
-        const times = sup.times || [];
-        if (!times.length) return reply(i, { content: '📅 Es sind noch keine Support-Öffnungszeiten hinterlegt (Dashboard → Support).' });
+        const times = (sup.rooms || []).flatMap((r) => (r.times || []));
+        if (!times.length) return reply(i, { content: '📅 Es sind noch keine Support-Öffnungszeiten hinterlegt (Dashboard → Voice-Support).' });
         const lines = times.map((x) => `**${x.day}:** ${x.start}–${x.end}`);
         const e = new EmbedBuilder()
           .setColor(parseHexColor(cfg.embed.color))
@@ -434,12 +436,18 @@ export const general = [
 
       if (!isAdmin(i.member, cfg)) return reply(i, { content: '❌ Keine Berechtigung.' });
       if (sub === 'add_time') {
+        const rooms = sup.rooms || [];
+        if (!rooms.length) return reply(i, { content: '❌ Zuerst einen Warteraum im Dashboard anlegen (Voice-Support).' });
         const t = { day: i.options.getString('day'), start: i.options.getString('start'), end: i.options.getString('end') };
-        store.updateConfig(g.id, { support: { ...sup, times: [...(sup.times || []), t] } });
-        return reply(i, { content: `✅ Zeitfenster **${t.day} ${t.start}–${t.end}** hinzugefügt.` });
+        const target = rooms.find((r) => r.enabled) || rooms[0];
+        target.times = [...(target.times || []), t];
+        store.updateConfig(g.id, { support: { ...sup, rooms } });
+        return reply(i, { content: `✅ Zeitfenster **${t.day} ${t.start}–${t.end}** hinzugefügt (Warteraum „${target.name}").` });
       }
       if (sub === 'clear_times') {
-        store.updateConfig(g.id, { support: { ...sup, times: [] } });
+        const rooms = sup.rooms || [];
+        rooms.forEach((r) => { r.times = []; });
+        store.updateConfig(g.id, { support: { ...sup, rooms } });
         return reply(i, { content: '✅ Alle Support-Zeiten gelöscht.' });
       }
     },

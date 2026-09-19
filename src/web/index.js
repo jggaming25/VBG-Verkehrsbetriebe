@@ -227,7 +227,7 @@ app.post('/api/g/:gid/settings', requireAuth, requireGuild, (req, res) => {
 app.get('/api/g/:gid/module/:name', requireAuth, requireGuild, (req, res) => {
   const cfg = store.ensureConfig(req.params.gid);
   const name = String(req.params.name).replace(/[^a-z]/gi, '');
-  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'protection', 'activity', 'social'];
+  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'privatevoice', 'protection', 'activity', 'social'];
   if (!supported.includes(name)) return res.status(400).json({ error: 'unknown_module' });
   const extra = {};
   if (name === 'activity') extra.counts = cfg.activityCounts || {};
@@ -240,7 +240,7 @@ app.get('/api/g/:gid/module/:name', requireAuth, requireGuild, (req, res) => {
 app.post('/api/g/:gid/module/:name', requireAuth, requireGuild, (req, res) => {
   const cfg = store.ensureConfig(req.params.gid);
   const name = String(req.params.name).replace(/[^a-z]/gi, '');
-  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'protection', 'activity'];
+  const supported = ['moderation', 'news', 'suggestions', 'welcome', 'farewell', 'stats', 'support', 'privatevoice', 'protection', 'activity'];
   if (!supported.includes(name)) return res.status(400).json({ error: 'unknown_module' });
   if (name === 'social') return res.status(400).json({ error: 'social_immutable_via_generic' });
   const prev = cfg[name] || {};
@@ -288,7 +288,14 @@ function moduleMeta(gid, name) {
     case 'stats':
       return { channels: chan((c) => c.type === 2) };
     case 'support':
-      return { channels: chan(() => true), roles: roles() };
+    case 'privatevoice':
+      return {
+        channels: chan(() => true),
+        categories: chan((c) => c.type === 4),
+        voiceChannels: chan((c) => c.type === 2),
+        textChannels: chan((c) => c.isTextBased && c.isTextBased()),
+        roles: roles(),
+      };
     case 'protection':
       return { channels: chan(() => true), roles: roles() };
     case 'activity':

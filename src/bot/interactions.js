@@ -1,7 +1,7 @@
 import { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { store } from '../store.js';
 import { t } from '../i18n.js';
-import { isStaff } from '../auth.js';
+import { isStaff, canManageServer } from '../auth.js';
 import { extractionId } from '../util.js';
 import {
   createTicket,
@@ -45,6 +45,30 @@ export async function handleInteraction(client, i) {
     }
 
     if (cd.startsWith('pselect:')) return;
+
+    if (cd.startsWith('sup:')) {
+      const [, act, roomId, targetId] = cd.split(':');
+      if (act !== 'take' && act !== 'later') return ack(i, { content: 'Unbekannte Aktion.', ephemeral: true }, true);
+      const st = cfg.support || {};
+      const room = (st.rooms || []).find((r) => r.id === roomId || r.waitingChannelId === roomId);
+      if (!room) return ack(i, { content: 'Dieser Warteraum existiert nicht mehr.', ephemeral: true }, true);
+      if (act === 'later') {
+        return ack(i, { content: 'OK – der Fall bleibt im Warteraum.', ephemeral: true }, true);
+      }
+      // Fall übernehmen
+      if (!isStaff(i.member, cfg) && !canManageServer(i.member)) {
+        return ack(i, { content: t(cfg, 'errors_no_perm'), ephemeral: true }, true);
+      }
+      const helper = i.member.voice?.channel;
+      const waitingCh = guild.channels.cache.get(room.waitingChannelId);
+      if (!helper) return ack(i, { content: '❌ Du musst mit einem Voice-Kanal verbunden sein, um einen Fall zu übernehmen.', ephemeral: true }, true);
+      const target = guild.members.cache.get(targetId);
+      if (target && waitingCh) {
+        await target.voice.setChannel(helper.id, 'Support-Fall übernommen').catch(() => {});
+        await waitingCh.send({ content: `🎧 <@${helper.id}> übernimmt den Support-Fall für <@${targetId}>.` }).catch(() => {});
+      }
+      return ack(i, { content: '🎧 Fall übernommen – Nutzer wurde in deinen Kanal geholt.', ephemeral: true }, true);
+    }
 
     if (cd.startsWith('fb:')) {
       const [, stars, ticketId] = cd.split(':');
