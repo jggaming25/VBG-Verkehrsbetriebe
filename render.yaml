@@ -29,4 +29,4 @@ services:
       - key: PORT
         value: 10000
       - key: DATA_DIR
-        value: /var/data
+        value: ./data

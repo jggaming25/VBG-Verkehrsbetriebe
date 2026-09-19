@@ -51,7 +51,13 @@ export class Store {
 
   init() {
     const dir = config.dataDir;
-    fs.mkdirSync(path.join(dir, 'transcripts'), { recursive: true });
+    try {
+      fs.mkdirSync(path.join(dir, 'transcripts'), { recursive: true });
+    } catch (e) {
+      console.warn(`[STORE] Datenverzeichnis "${dir}" nicht beschreibbar – verwende "data/"`, e.message);
+      config.dataDir = 'data';
+      fs.mkdirSync(path.join('data', 'transcripts'), { recursive: true });
+    }
     if (fs.existsSync(file())) {
       try {
         const raw = JSON.parse(fs.readFileSync(file(), 'utf8'));
