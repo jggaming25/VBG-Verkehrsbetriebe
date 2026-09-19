@@ -1,0 +1,32 @@
+# Render Blueprint – vbg-ticket-bot (Bot + Dashboard in einem Service)
+# https://dashboard.render.com/blueprints nutzen, oder als "Web Service" anlegen.
+services:
+  - type: web
+    name: vbg-ticket-bot
+    runtime: node
+    plan: free
+    region: frankfurt
+    healthCheckPath: /ping
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: CLIENT_ID
+        sync: false
+      - key: CLIENT_SECRET
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: ADMIN_ROLE_ID
+        value: 1544006176109498458
+      - key: WEB_URL
+        sync: false
+      - key: PORT
+        value: 10000
+      - key: DATA_DIR
+        value: /var/data

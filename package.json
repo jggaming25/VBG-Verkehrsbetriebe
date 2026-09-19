@@ -1,0 +1,20 @@
+{
+  "name": "vbg-ticket-bot",
+  "version": "1.0.0",
+  "description": "Galaxy-Bot-Style Discord Ticket Bot mit Dashboard (Discord-Login), Panels, Topics, Transkripten, Feedback, Auto-Close, Logs und i18n (DE/EN).",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1"
+  }
+}

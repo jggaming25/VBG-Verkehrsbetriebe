@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VBG Tickets – Dashboard Login</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  .landing { max-width: 860px; margin: 0 auto; padding: 70px 24px; text-align: center; }
+  .logo { font-size: 58px; }
+  h1 { font-size: 42px; margin: 16px 0 10px; background: linear-gradient(90deg, #5865f2, #23a55a); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  p.sub { color: var(--muted); font-size: 17px; margin-bottom: 30px; }
+  .features { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); gap: 14px; margin-top: 46px; text-align: left; }
+  .feat { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .feat b { display: block; margin-bottom: 6px; }
+  .feat span { color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .footer { color: var(--muted); font-size: 12px; margin-top: 60px; }
+</style>
+</head>
+<body>
+  <div class="landing">
+    <div class="logo">🎫</div>
+    <h1>VBG Tickets</h1>
+    <p class="sub">Galaxy-Bot-Style Ticket-System mit Dashboard, Transkripten, Feedback &amp; Auto-Close.</p>
+    <a class="btn" id="loginBtn" href="/auth/login">Login mit Discord</a>
+    <div class="features">
+      <div class="feat"><b>📨 Panels &amp; Topics</b><span>Unbegrenzte Panels mit Buttons &amp; Auswahl-Menüs.</span></div>
+      <div class="feat"><b>🧾 Transkripte</b><span>Automatische Transkripte, auch als Web-Link abrufbar.</span></div>
+      <div class="feat"><b>⭐ Feedback</b><span>Bewertungen nach Ticket-Schließung erfassen.</span></div>
+      <div class="feat"><b>⏰ Auto-Systeme</b><span>Auto-Close bei Inaktivität &amp; Auto-Delete.</span></div>
+      <div class="feat"><b>🛡️ Rollen-System</b><span>Staff-, Manager- &amp; Admin-Rollen steuern den Zugriff.</span></div>
+      <div class="feat"><b>📊 Übersicht</b><span>Tickets, Statistiken &amp; Logs auf einem Blick.</span></div>
+    </div>
+    <div class="footer">Nur für Administratoren &amp; berechtigte Rollen. · Powered by VBG</div>
+  </div>
+</body>
+</html>

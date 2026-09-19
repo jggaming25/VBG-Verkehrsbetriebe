@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transkript</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  .wrap { max-width: 820px; margin: 0 auto; padding: 30px 22px; }
+  .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div>
+        <h1 id="title">Transkript laden…</h1>
+        <span class="muted" id="meta"></span>
+      </div>
+      <a class="btn ghost sm" href="/dashboard">← Zum Dashboard</a>
+    </div>
+    <div class="card"><pre id="body">Lade…</pre></div>
+  </div>
+  <script>
+    const id = decodeURIComponent(location.pathname.split('/').pop().toUpperCase());
+    (async () => {
+      try {
+        const r = await fetch('/api/transcript/' + encodeURIComponent(id));
+        if (r.status === 401) return location.href = '/auth/login';
+        if (r.status === 403) return document.getElementById('body').textContent = 'Keine Berechtigung.';
+        const j = await r.json();
+        if (!j.ticket) return document.getElementById('body').textContent = 'Transkript nicht gefunden.';
+        document.getElementById('title').textContent = 'Transkript – ' + j.ticket.id;
+        document.getElementById('meta').textContent = 'Thema: ' + (j.ticket.topic || '–') + ' · Erstellt von: ' + (j.ticket.creatorName || '–');
+        document.getElementById('body').textContent = j.transcript || 'Kein Transkript vorhanden.';
+      } catch (e) {
+        document.getElementById('body').textContent = 'Fehler beim Laden.';
+      }
+    })();
+  </script>
+</body>
+</html>
